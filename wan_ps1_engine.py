@@ -124,15 +124,14 @@ def main():
             if sched_name == "ddim":
                 pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
             elif sched_name in ["dpmpp_2m_sde", "dpmpp_3m_sde"]:
-                pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
-                # Adjust solver order for 2M vs 3M
-                if sched_name.startswith("dpmpp_2") and hasattr(pipe.scheduler, 'config'):
-                    pipe.scheduler.config.update({"solver_order": 2})
-                elif sched_name.startswith("dpmpp_3") and hasattr(pipe.scheduler, 'config'):
-                    pipe.scheduler.config.update({"solver_order": 3})
-                # Ensure use of SDE solver type
-                if hasattr(pipe.scheduler, 'config'):
-                    pipe.scheduler.config.update({"algorithm_type": "sde-dpmsolver"})
+                # The scheduler's config is a FrozenDict and cannot be mutated in-place.
+                # Instead, create a new scheduler with the desired parameters.
+                solver_order = 2 if sched_name.startswith("dpmpp_2") else 3
+                pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+                    pipe.scheduler.config,
+                    algorithm_type="sde-dpmsolver",
+                    solver_order=solver_order,
+                )
             elif sched_name == "unipc":
                 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
             elif sched_name == "euler_a":
