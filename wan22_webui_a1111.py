@@ -399,7 +399,7 @@ def build_ui():
                                 send_to_txt = gr.Button("Send to txt2vid", elem_classes=["smallbtn"])
 
                         neg2 = gr.Textbox(label="Negative prompt", lines=2)
-                        init_img = gr.Image(label="Init Image", type="filepath", tool="editor")
+                        init_img = gr.Image(label="Init Image", type="filepath")
 
                         with gr.Row():
                             sampler2 = gr.Dropdown(choices=SAMPLERS, value="dpmpp_3m_sde", label="Sampling method")
