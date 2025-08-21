@@ -140,6 +140,17 @@ def main():
                 pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config)
             log(f"[ps1-engine] Scheduler set to {sched_name}")
 
+    # Ensure scheduler prediction_type is compatible with diffusers
+    try:
+        if getattr(pipe.scheduler.config, "prediction_type", "epsilon") not in ("epsilon", "v_prediction"):
+            pipe.scheduler = pipe.scheduler.__class__.from_config(
+                pipe.scheduler.config,
+                prediction_type="epsilon",
+            )
+            log("[ps1-engine] Scheduler prediction_type set to epsilon")
+    except Exception as e:
+        log(f"[ps1-engine] Could not adjust scheduler prediction_type: {e}")
+
     # Apply LoRA weights if provided
     loras = parse_loras(args.lora)
     if loras:
