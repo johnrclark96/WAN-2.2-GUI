@@ -1,0 +1,33 @@
+# Ignore Python virtual environments
+venv/
+
+# Ignore large model/data/output folders
+models/
+loras/
+outputs/
+
+# Ignore backup and log files
+*.bak
+*.log
+
+# Ignore compressed archives
+*.zip
+*.tar
+*.tar.gz
+
+# Ignore Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore Jupyter Notebook checkpoints (if any)
+.ipynb_checkpoints/
+
+# Ignore environment and dependency files (if auto-generated)
+.env
+*.env
+
+# Miscellaneous system files
+.DS_Store
+Thumbs.db
