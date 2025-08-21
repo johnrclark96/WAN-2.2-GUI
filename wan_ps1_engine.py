@@ -60,13 +60,16 @@ def main():
 
     # Lazy-import torch to speed up CLI startup
     import torch
-import torch.nn.functional as _F
-_orig_sdpa = _F.scaled_dot_product_attention
-def _sdpa_shim(*args, **kwargs):
-    # Some WAN builds pass 'enable_gqa'; older torch ignores it
-    kwargs.pop("enable_gqa", None)
-    return _orig_sdpa(*args, **kwargs)
-_F.scaled_dot_product_attention = _sdpa_shim
+    import torch.nn.functional as _F
+    _orig_sdpa = _F.scaled_dot_product_attention
+
+    def _sdpa_shim(*args, **kwargs):
+        # Some WAN builds pass 'enable_gqa'; older torch ignores it
+        kwargs.pop("enable_gqa", None)
+        return _orig_sdpa(*args, **kwargs)
+
+    _F.scaled_dot_product_attention = _sdpa_shim
+
     try:
         from diffusers import DiffusionPipeline
     except Exception as e:
@@ -203,11 +206,16 @@ _F.scaled_dot_product_attention = _sdpa_shim
     except Exception:
         fps_i = 12
 
-    # Common pipeline call parameters:
+    # Common pipeline call parameters
     common_kwargs = dict(
-        prompt       = args.prompt or "",
-        negative_prompt = args.neg_prompt or "",
-        num_inference_steps = int(args.steps)
+        prompt=args.prompt or "",
+        negative_prompt=args.neg_prompt or "",
+        num_inference_steps=int(args.steps),
+        guidance_scale=float(args.cfg),
+        width=int(W),
+        height=int(H),
+    )
+
     # --- progress callback: emit per-step progress lines for console bars ---
     steps_total = max(1, int(args.steps))
     frames_total = max(1, int(args.frames))
@@ -221,11 +229,10 @@ _F.scaled_dot_product_attention = _sdpa_shim
         cur = step + 1
         pct = int(min(100, max(0, round(cur * 100 / steps_total))))
         # We can't reliably know current frame; advertise in-flight.
-        print(f"[PROGRESS] step={cur}/{steps_total} frame=1/{frames_total} percent={pct}", flush=True)
-,
-        guidance_scale     = float(args.cfg),
-        width  = int(W), height = int(H)
-    )
+        print(
+            f"[PROGRESS] step={cur}/{steps_total} frame=1/{frames_total} percent={pct}",
+            flush=True,
+        )
     if generator is not None:
         common_kwargs["generator"] = generator
     if args.mode in ("i2v", "ti2v") and args.init_image:
@@ -237,10 +244,11 @@ _F.scaled_dot_product_attention = _sdpa_shim
         {"video_length": int(args.frames), "fps": fps_i},
         {"num_frames": int(args.frames)},
         {"video_length": int(args.frames)},
-        {}
+        {},
     ]
-        result = None
+    result = None
     last_err = None
+
     # Try with callback first; if pipeline rejects it, retry without
     for v in call_variants:
         base_kwargs = {**common_kwargs, **v}
@@ -250,9 +258,11 @@ _F.scaled_dot_product_attention = _sdpa_shim
                 if with_cb:
                     kwargs["callback"] = _progress_cb
                     kwargs["callback_steps"] = 1
-                log(f"[ps1-engine] Generating… steps={kwargs.get('num_inference_steps')} "
+                log(
+                    f"[ps1-engine] Generating… steps={kwargs.get('num_inference_steps')} "
                     f"frames={kwargs.get('num_frames') or kwargs.get('video_length')} "
-                    f"fps={kwargs.get('fps')}")
+                    f"fps={kwargs.get('fps')}"
+                )
                 result = pipe(**kwargs)
                 raise StopIteration  # success
             except TypeError as e:
