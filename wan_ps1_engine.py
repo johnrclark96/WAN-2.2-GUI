@@ -19,6 +19,10 @@ try:
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     try:
+        torch.backends.cudnn.benchmark = True
+    except Exception:
+        pass
+    try:
         torch.set_float32_matmul_precision("high")
     except Exception:
         pass
@@ -171,6 +175,11 @@ def main():
         except Exception: pass
         try: pipe.text_encoder.to(memory_format=torch.channels_last)
         except Exception: pass
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+            log("Xformers memory-efficient attention enabled")
+        except Exception:
+            pass
     except Exception as e:
         log(f"Failed to move pipe to CUDA: {e}"); return 3
 

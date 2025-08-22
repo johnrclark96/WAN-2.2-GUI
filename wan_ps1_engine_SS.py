@@ -57,6 +57,19 @@ def main():
     # lazy imports so PS starts fast
     import torch
     try:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        try:
+            torch.backends.cudnn.benchmark = True
+        except Exception:
+            pass
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
         from diffusers import DiffusionPipeline
     except Exception as e:
         log(f"[ps1-engine] Diffusers import error: {e}")
@@ -95,6 +108,13 @@ def main():
             pipe.to("cuda" if torch.cuda.is_available() else "cpu")
     elif hasattr(pipe, "to"):
         pipe.to("cuda" if torch.cuda.is_available() else "cpu")
+
+    if hasattr(pipe, "enable_xformers_memory_efficient_attention"):
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+            log("[ps1-engine] Xformers memory-efficient attention enabled")
+        except Exception:
+            pass
 
     # LoRA merge (best-effort)
     loras = parse_loras(args.lora)
