@@ -208,31 +208,18 @@ def main():
     last_err = None
     for vkw in variants:
         try:
-            kw = dict(common); kw.update(vkw)
-            log(f"[ps1-engine] Generating… steps={kw.get('num_inference_steps')} "
-                f"frames={kw.get('num_frames') or kw.get('video_length')} fps={kw.get('fps')}")
+            kw = dict(common)
+            kw.update(vkw)
+            log(
+                f"[ps1-engine] Generating... steps={kw.get('num_inference_steps')} "
+                f"frames={kw.get('num_frames') or kw.get('video_length')} fps={kw.get('fps')}"
+            )
             out = pipe(**kw)
             break
         except TypeError as e:
             last_err = e
             continue
 
-    variants = [
-        {"num_frames": int(args.frames), "fps": int(args.fps)},
-        {"video_length": int(args.frames), "fps": int(args.fps)},
-        {"num_frames": int(args.frames)},
-        {"video_length": int(args.frames)},
-        {}
-    ]
-    out = None; last_err = None
-    for vkw in variants:
-        try:
-            kw = dict(common); kw.update(vkw)
-            log(f"[ps1-engine] Generating… steps={kw.get('num_inference_steps')} frames={kw.get('num_frames') or kw.get('video_length')} fps={kw.get('fps')}")
-            out = pipe(**kw)
-            break
-        except TypeError as e:
-            last_err = e; continue
     if out is None:
         log(f"[ps1-engine] pipeline call failed: {last_err}")
         return 4
@@ -245,7 +232,7 @@ def main():
         try:
             import numpy as np, imageio
             arr = [np.array(f) for f in frames]
-            imageio.mimwrite(str(video_path), arr, fps=max(1, int(args.fps)))
+            imageio.mimwrite(str(video_path), arr, fps=fps_i)
             log(f"saved: {video_path}")
             return True
         except Exception as e:
@@ -267,7 +254,7 @@ def main():
                 import numpy as np, imageio
                 v = vid[0] if getattr(vid, "ndim", 0) == 5 else vid
                 v = (v.permute(0,2,3,1).clamp(0,1).cpu().numpy() * 255).astype("uint8")
-                imageio.mimwrite(str(video_path), v, fps=max(1, int(args.fps)))
+                imageio.mimwrite(str(video_path), v, fps=fps_i)
                 log(f"saved: {video_path}")
                 saved = True
         except Exception as e:
