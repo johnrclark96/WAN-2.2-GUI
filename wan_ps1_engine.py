@@ -319,7 +319,8 @@ def main():
     def _cb(step, timestep, latents):
         cur = int(step) + 1
         pct = int(min(100, max(0, round(cur * 100 / steps_total))))
-        print(f"[PROGRESS] step={cur}/{steps_total} frame=1/{frames} percent={pct}", flush=True)
+        msg = {"event": "progress", "step": cur, "total": steps_total, "percent": pct}
+        print(json.dumps(msg), flush=True)
 
     common = dict(
         prompt=args.prompt, negative_prompt=args.neg_prompt or None,
@@ -387,6 +388,7 @@ def main():
 
     save_video(_frame_gen(frames_out), args.fps, mp4_path)
     log(f"wrote: {mp4_path}")
+    print(json.dumps({"event": "done", "video": mp4_path}), flush=True)
     del result, frames_out, pipe
     gc.collect()
     try:
