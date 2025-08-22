@@ -13,7 +13,8 @@ try:
 except Exception:
     pass
 
-# --- perf: tf32 + sdp kernels ---
+# --- perf: tf32 + sdpa kernels ---
+_sdpa_ctx = None
 try:
     import torch
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -27,11 +28,12 @@ try:
     except Exception:
         pass
     try:
-        torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=True, enable_math=True)
+        from torch.nn.attention import sdpa_kernel
+        _sdpa_ctx = sdpa_kernel(enable_flash=False, enable_mem_efficient=True, enable_math=True)
     except Exception:
-        pass
+        _sdpa_ctx = None
 except Exception:
-    pass
+    _sdpa_ctx = None
 # --- end perf ---
 
 def log(msg: str):
@@ -133,12 +135,17 @@ def round_frames(n: int) -> int:
     up = down + 4
     return up if (n - down) >= (up - n) else down
 
-def normalize_resolution(model_dir: str, w: int, h: int):
-    """For TI2V-5B, map 1280x720 to 1280x704 (official run-size)."""
-    name = (model_dir or "").lower()
-    if "ti2v-5b" in name and w == 1280 and h == 720:
-        log("TI2V-5B: snapping 1280x720 to 1280x704 (official run-size).")
-        return 1280, 704
+def normalize_resolution(pipe, w: int, h: int):
+    """Snap H/W to the nearest multiple allowed by the model."""
+    try:
+        mod = pipe.vae_scale_factor_spatial * pipe.transformer.config.patch_size[1]
+        w0, h0 = int(w), int(h)
+        w = (w0 // mod) * mod
+        h = (h0 // mod) * mod
+        if w != w0 or h != h0:
+            log(f"Snapped resolution from {w0}x{h0} to {w}x{h} (mod={mod}).")
+    except Exception as e:
+        log(f"Resolution snap failed: {e}")
     return w, h
 
 def save_video(frames, fps: int, outpath: str):
@@ -172,8 +179,6 @@ def main():
     if not model_dir:
         log("Model directory not found. Set --model_dir or WAN22_MODEL_DIR."); return 2
 
-    width, height = normalize_resolution(model_dir, int(args.width), int(args.height))
-
     # Seed (optional)
     try:
         g = torch.Generator(device="cuda")
@@ -186,7 +191,10 @@ def main():
     log(f"Loading model: {model_dir}")
     pipe = build_pipe(model_dir, args.dtype)
 
-    # Move model weights to GPU and favour channel-last tensors for efficiency
+    # Snap resolution to model granularity
+    width, height = normalize_resolution(pipe, int(args.width), int(args.height))
+
+    # Move model weights to GPU when possible, otherwise fall back to CPU offload
     try:
         pipe.to("cuda")
         try: pipe.unet.to(memory_format=torch.channels_last)
@@ -198,23 +206,29 @@ def main():
             log("Xformers memory-efficient attention enabled")
         except Exception:
             pass
+        log("Moved pipeline to CUDA")
     except Exception as e:
-        log(f"Failed to move pipe to CUDA: {e}"); return 3
-
-    # Free VRAM: keep VAE on CPU and enable slicing/tiling
-    try:
-        pipe.vae.to("cpu")
+        log(f"Failed to move pipe to CUDA: {e}")
         try:
-            pipe.enable_vae_slicing(); pipe.enable_vae_tiling()
-        except Exception:
-            pass
-        try: pipe.enable_attention_slicing()
-        except Exception: pass
-        log("VAE moved to CPU (float32) with slicing/tiling; attention slicing enabled.")
-        try: torch.cuda.empty_cache()
-        except Exception: pass
-    except Exception as _e:
-        log(f"VAE/attention memory tweaks skipped: {_e}")
+            pipe.enable_model_cpu_offload()
+            log("Falling back to CPU offload")
+        except Exception as e2:
+            log(f"CPU offload failed: {e2}")
+            return 3
+
+    # Optional memory tweaks
+    try:
+        pipe.enable_vae_slicing(); pipe.enable_vae_tiling()
+    except Exception:
+        pass
+    try:
+        pipe.enable_attention_slicing()
+    except Exception:
+        pass
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
 
     # Scheduler
     apply_wan_scheduler_fix(pipe, args.sampler, width, height)
@@ -246,8 +260,12 @@ def main():
             if with_cb:
                 kwargs["callback"] = _cb; kwargs["callback_steps"] = 1
             log(f"Generating… steps={steps} frames={frames} fps={args.fps}")
-            with torch.inference_mode():
-                result = pipe(**kwargs)
+            if _sdpa_ctx is not None:
+                with torch.inference_mode(), _sdpa_ctx:
+                    result = pipe(**kwargs)
+            else:
+                with torch.inference_mode():
+                    result = pipe(**kwargs)
             break
         except TypeError as e:
             last_err = e; continue
