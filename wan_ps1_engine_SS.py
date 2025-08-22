@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # wan_ps1_engine.py — pure Python engine the PS1 calls (no fallback)
 
-import os, re, sys, json, time, argparse, random
+import os, re, sys, json, time, argparse, random, gc
 from pathlib import Path
 
 def log(msg): print(msg, flush=True)
@@ -269,6 +269,12 @@ def main():
         except Exception:
             pass
 
+    del out, pipe
+    gc.collect()
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
     return 0
 
 if __name__ == "__main__":
