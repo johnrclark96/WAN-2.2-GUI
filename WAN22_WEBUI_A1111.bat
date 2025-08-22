@@ -9,6 +9,8 @@ set PY=%ROOT%\venv\Scripts\python.exe
 set UI=%ROOT%\wan22_webui_a1111.py
 set LOG=%ROOT%\webui_launch.log
 
+REM GUI layout resides in gui\layout.py
+
 echo [BOOT] WAN 2.2 UI from %ROOT%
 cd /d "%ROOT%" || (echo [ERROR] Could not cd into %ROOT% & pause & exit /b 1)
 
