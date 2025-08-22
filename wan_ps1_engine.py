@@ -195,31 +195,53 @@ def main():
     width, height = normalize_resolution(pipe, int(args.width), int(args.height))
 
     # Move model weights to GPU when possible, otherwise fall back to CPU offload
-    try:
-        pipe.to("cuda")
-        try: pipe.unet.to(memory_format=torch.channels_last)
-        except Exception: pass
-        try: pipe.text_encoder.to(memory_format=torch.channels_last)
-        except Exception: pass
+    use_cuda = torch.cuda.is_available()
+    free_mem = total_mem = 0
+    if use_cuda:
         try:
-            pipe.enable_xformers_memory_efficient_attention()
-            log("Xformers memory-efficient attention enabled")
-        except Exception:
-            pass
-        log("Moved pipeline to CUDA")
-    except Exception as e:
-        log(f"Failed to move pipe to CUDA: {e}")
+            free_mem, total_mem = torch.cuda.mem_get_info()
+            log(f"VRAM free={free_mem/1e9:.2f}GB total={total_mem/1e9:.2f}GB")
+            dtype = getattr(torch, args.dtype, torch.bfloat16)
+            dtype_size = torch.tensor([], dtype=dtype).element_size()
+            param_mem = sum(p.numel() * p.element_size() for p in pipe.parameters())
+            est_frames = max(1, int(args.frames))
+            frame_mem = width * height * est_frames * 4 * dtype_size
+            required_mem = param_mem + frame_mem
+            if required_mem > free_mem:
+                log(f"Insufficient VRAM: need {required_mem/1e9:.2f}GB, have {free_mem/1e9:.2f}GB")
+                use_cuda = False
+        except Exception as e:
+            log(f"VRAM check failed: {e}")
+            use_cuda = False
+
+    if use_cuda:
         try:
-            pipe.enable_sequential_cpu_offload()
-            log("Falling back to sequential CPU offload")
-        except Exception as e_seq:
-            log(f"Sequential CPU offload unavailable: {e_seq}")
+            pipe.to("cuda")
+            try: pipe.unet.to(memory_format=torch.channels_last)
+            except Exception: pass
+            try: pipe.text_encoder.to(memory_format=torch.channels_last)
+            except Exception: pass
+            try:
+                pipe.enable_xformers_memory_efficient_attention()
+                log("Xformers memory-efficient attention enabled")
+            except Exception:
+                pass
+            log("Moved pipeline to CUDA")
+        except Exception as e:
+            log(f"Failed to move pipe to CUDA: {e}")
             try:
                 pipe.enable_model_cpu_offload()
-                log("Falling back to model CPU offload")
+                log("Falling back to CPU offload")
             except Exception as e2:
                 log(f"CPU offload failed: {e2}")
                 return 3
+    else:
+        try:
+            pipe.enable_model_cpu_offload()
+            log("Falling back to CPU/offload mode")
+        except Exception as e2:
+            log(f"CPU offload failed: {e2}")
+            return 3
 
     # Optional memory tweaks
     try:
