@@ -200,12 +200,22 @@ def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=Tru
         for line in PROC.stdout:
             logs += line
             # Update progress based on runner messages
-            if "Loading model" in line:
-                progress(0.0, desc="Importing model")
-            m_pct = re.search(r"percent=(\d+)", line)
-            if m_pct:
-                pct = int(m_pct.group(1))
-                progress(pct / 100.0, desc=f"Generating {pct}%")
+            if "[PROGRESS]" in line:
+                text = line.split("[PROGRESS]", 1)[1].strip()
+                m_pct = re.search(r"percent=(\d+)", text)
+                if m_pct:
+                    pct = int(m_pct.group(1))
+                    desc = re.sub(r"percent=\d+", "", text).strip() or f"Generating {pct}%"
+                    progress(pct / 100.0, desc=desc)
+                else:
+                    progress(0, desc=text)
+            else:
+                if "Loading model" in line:
+                    progress(0.0, desc="Importing model")
+                m_pct = re.search(r"percent=(\d+)", line)
+                if m_pct:
+                    pct = int(m_pct.group(1))
+                    progress(pct / 100.0, desc=f"Generating {pct}%")
             # Detect a saved output path in the engine logs:
             m = re.search(r"(saved|wrote|output)[:\s]+(.+\.(?:mp4|gif|webm|mov))", line, re.I)
             if m and not video:
@@ -370,7 +380,6 @@ def build_ui():
                 def send_txt_to_img(p, n):
                     # Send prompt/negatives from txt2vid to img2vid tab
                     return p, n
-                send_to_img.click(send_txt_to_img, inputs=[prompt, neg], outputs=[])
 
                 def do_generate_txt(p, n, samp, st, w, h, f_fps, f_frames, bcnt, bsz, cfg_s, seed_s, loras_tbl, model_choice, runner_p, out_dir, extra_flags, progress=gr.Progress(track_tqdm=True)):
                     # Validate early
@@ -475,7 +484,6 @@ def build_ui():
 
                 def send_img_to_txt(p, n):
                     return p, n
-                send_to_txt.click(send_img_to_txt, inputs=[prompt2, neg2], outputs=[])
 
                 def do_generate_img(p, n, init, samp, st, w, h, f_fps, f_frames, bcnt, bsz, cfg_s, seed_s, loras_tbl, model_choice2, runner_p, out_dir, extra_flags, progress=gr.Progress(track_tqdm=True)):
                     # Validate inputs
@@ -517,6 +525,10 @@ def build_ui():
                     outputs=[console2, result_video2, gen_info2]
                 )
                 interrupt2.click(lambda: interrupt_proc(), inputs=[], outputs=[console2])
+
+                # Cross-tab prompt transfer
+                send_to_img.click(send_txt_to_img, inputs=[prompt, neg], outputs=[prompt2, neg2])
+                send_to_txt.click(send_img_to_txt, inputs=[prompt2, neg2], outputs=[prompt, neg])
 
             # ===================== CONSOLE TAB =====================
             with gr.Tab("Console"):
