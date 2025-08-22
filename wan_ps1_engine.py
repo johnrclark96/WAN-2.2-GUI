@@ -1,4 +1,4 @@
-﻿import argparse, json, os, sys, time
+import argparse, json, os, sys, time, gc
 from typing import Optional
 
 # ---- SDPA shim to ignore unexpected kwargs (e.g. enable_gqa) ----
@@ -325,6 +325,12 @@ def main():
 
     save_video(frames_out, args.fps, mp4_path)
     log(f"wrote: {mp4_path}")
+    del result, frames_out, pipe
+    gc.collect()
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
     return 0
 
 if __name__ == "__main__":

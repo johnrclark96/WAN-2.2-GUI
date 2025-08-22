@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # wan_ps1_engine.py — pure Python engine the PS1 calls (no fallback)
 
-import os, re, sys, json, time, argparse, random
+import os, re, sys, json, time, argparse, random, gc
 from pathlib import Path
 
 def log(msg): print(msg, flush=True)
@@ -100,13 +100,22 @@ def main():
         return 3
 
     # Device / offload
-    if hasattr(pipe, "enable_model_cpu_offload"):
+    offload_done = False
+    if hasattr(pipe, "enable_sequential_cpu_offload"):
+        try:
+            pipe.enable_sequential_cpu_offload()
+            log("[ps1-engine] Using sequential CPU offload")
+            offload_done = True
+        except Exception as e:
+            log(f"[ps1-engine] Sequential CPU offload unavailable: {e}")
+    if not offload_done and hasattr(pipe, "enable_model_cpu_offload"):
         try:
             pipe.enable_model_cpu_offload()
-        except Exception:
-            # Fallback to .to()
-            pipe.to("cuda" if torch.cuda.is_available() else "cpu")
-    elif hasattr(pipe, "to"):
+            log("[ps1-engine] Using model CPU offload")
+            offload_done = True
+        except Exception as e:
+            log(f"[ps1-engine] Model CPU offload failed: {e}")
+    if not offload_done and hasattr(pipe, "to"):
         pipe.to("cuda" if torch.cuda.is_available() else "cpu")
 
     if hasattr(pipe, "enable_xformers_memory_efficient_attention"):
@@ -269,6 +278,12 @@ def main():
         except Exception:
             pass
 
+    del out, pipe
+    gc.collect()
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
     return 0
 
 if __name__ == "__main__":
