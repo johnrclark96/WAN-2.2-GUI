@@ -4,20 +4,39 @@ from typing import Optional
 
 # ---- SDPA helper to ignore unsupported kwargs (e.g. enable_gqa) ----
 def _patch_sdpa_for_gqa():
-    """Patch torch's SDPA to drop enable_gqa if unsupported."""
+    """Patch torch's SDPA variants to drop enable_gqa if unsupported."""
     try:
-        import torch.nn.functional as _F
-        # If the current SDPA already accepts enable_gqa, nothing to do.
-        if "enable_gqa" in inspect.signature(_F.scaled_dot_product_attention).parameters:
-            return
+        import torch
 
-        _orig_sdpa = _F.scaled_dot_product_attention
+        modules = []
+        try:
+            import torch.nn.functional as _F
+            modules.append(_F)
+        except Exception:
+            pass
+        try:
+            import torch.nn.attention as _A
+            modules.append(_A)
+        except Exception:
+            pass
+        try:
+            modules.append(torch._C._nn)
+        except Exception:
+            pass
 
-        def _sdpa_shim(*args, **kwargs):
-            kwargs.pop("enable_gqa", None)
-            return _orig_sdpa(*args, **kwargs)
+        def _make_shim(fn):
+            def _shim(*args, **kwargs):
+                kwargs.pop("enable_gqa", None)
+                return fn(*args, **kwargs)
+            return _shim
 
-        _F.scaled_dot_product_attention = _sdpa_shim
+        for m in modules:
+            fn = getattr(m, "scaled_dot_product_attention", None)
+            if not fn:
+                continue
+            if "enable_gqa" in inspect.signature(fn).parameters:
+                continue
+            setattr(m, "scaled_dot_product_attention", _make_shim(fn))
     except Exception:
         pass
 
