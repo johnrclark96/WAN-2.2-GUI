@@ -196,7 +196,8 @@ def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=Tru
             bufsize=1,
             text=True,
             cwd=str(THIS_DIR),  # run in D:\wan22 directory
-            start_new_session=True,  # allow sending signals to the whole process group
+            start_new_session=(os.name != "nt"),  # posix: start new session
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             env={
                 **os.environ,
                 "PYTHONUNBUFFERED": "1",
@@ -283,7 +284,8 @@ def interrupt_proc():
                 except subprocess.TimeoutExpired:
                     # Fallback to a hard kill
                     if os.name == "nt":
-                        PROC.kill()
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(PROC.pid)],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     else:
                         os.killpg(PROC.pid, signal.SIGKILL)
                     PROC.wait()

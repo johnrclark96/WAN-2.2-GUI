@@ -209,7 +209,19 @@ def main():
             log(f"VRAM free={free_mem/1e9:.2f}GB total={total_mem/1e9:.2f}GB")
             dtype = getattr(torch, args.dtype, torch.bfloat16)
             dtype_size = torch.tensor([], dtype=dtype).element_size()
-            param_mem = sum(p.numel() * p.element_size() for p in pipe.parameters())
+            # Diffusers pipelines don't expose a direct `parameters()` method.
+            # Sum parameter sizes for each component that has `parameters`.
+            param_mem = 0
+            try:
+                comps = getattr(pipe, "components", {})
+                if isinstance(comps, dict):
+                    for comp in comps.values():
+                        if hasattr(comp, "parameters"):
+                            param_mem += sum(p.numel() * p.element_size() for p in comp.parameters())
+                elif hasattr(pipe, "parameters"):
+                    param_mem = sum(p.numel() * p.element_size() for p in pipe.parameters())
+            except Exception as pe:
+                log(f"Parameter memory calc failed: {pe}")
             est_frames = max(1, int(args.frames))
             frame_mem = width * height * est_frames * 4 * dtype_size
             required_mem = param_mem + frame_mem
