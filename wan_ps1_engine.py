@@ -1,18 +1,27 @@
-import argparse, json, os, sys, time, gc
-import multiprocessing as mp
+import argparse, json, os, sys, time, gc, inspect
+
 from typing import Optional
 
-# ---- SDPA shim to ignore unexpected kwargs (e.g. enable_gqa) ----
-try:
-    import torch
-    import torch.nn.functional as _F
-    _orig_sdpa = _F.scaled_dot_product_attention
-    def _sdpa_shim(*args, **kwargs):
-        kwargs.pop("enable_gqa", None)
-        return _orig_sdpa(*args, **kwargs)
-    _F.scaled_dot_product_attention = _sdpa_shim
-except Exception:
-    pass
+# ---- SDPA helper to ignore unsupported kwargs (e.g. enable_gqa) ----
+def _patch_sdpa_for_gqa():
+    """Patch torch's SDPA to drop enable_gqa if unsupported."""
+    try:
+        import torch.nn.functional as _F
+        # If the current SDPA already accepts enable_gqa, nothing to do.
+        if "enable_gqa" in inspect.signature(_F.scaled_dot_product_attention).parameters:
+            return
+
+        _orig_sdpa = _F.scaled_dot_product_attention
+
+        def _sdpa_shim(*args, **kwargs):
+            kwargs.pop("enable_gqa", None)
+            return _orig_sdpa(*args, **kwargs)
+
+        _F.scaled_dot_product_attention = _sdpa_shim
+    except Exception:
+        pass
+
+_patch_sdpa_for_gqa()
 
 # --- perf: tf32 + sdpa kernels ---
 # global pipeline/worker state

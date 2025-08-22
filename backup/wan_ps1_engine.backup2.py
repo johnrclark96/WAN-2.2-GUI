@@ -1,7 +1,7 @@
 ﻿#!/usr/bin/env python
 # wan_ps1_engine.py â€” pure Python engine the PS1 calls (no fallback)
 
-import os, re, sys, json, time, argparse, random
+import os, re, sys, json, time, argparse, random, inspect
 from pathlib import Path
 
 def log(msg): 
@@ -60,13 +60,23 @@ def main():
 
     # Lazy-import torch to speed up CLI startup
     import torch
-    import torch.nn.functional as _F
-    _orig_sdpa = _F.scaled_dot_product_attention
-    def _sdpa_shim(q, k, v, *args, **kwargs):
-        # Some WAN builds pass 'enable_gqa'; older torch ignores it
-        kwargs.pop("enable_gqa", None)
-        return _orig_sdpa(q, k, v, *args, **kwargs)
-    _F.scaled_dot_product_attention = _sdpa_shim
+
+    def _patch_sdpa_for_gqa():
+        try:
+            import torch.nn.functional as _F
+            if "enable_gqa" in inspect.signature(_F.scaled_dot_product_attention).parameters:
+                return
+            _orig_sdpa = _F.scaled_dot_product_attention
+
+            def _sdpa_shim(q, k, v, *args, **kwargs):
+                kwargs.pop("enable_gqa", None)
+                return _orig_sdpa(q, k, v, *args, **kwargs)
+
+            _F.scaled_dot_product_attention = _sdpa_shim
+        except Exception:
+            pass
+
+    _patch_sdpa_for_gqa()
     try:
         from diffusers import DiffusionPipeline
     except Exception as e:
