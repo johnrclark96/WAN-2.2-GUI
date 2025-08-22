@@ -1,4 +1,8 @@
-﻿$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:true,max_split_size_mb:128,garbage_collection_threshold:0.8"
+﻿$env:PYTORCH_CUDA_ALLOC_CONF = "max_split_size_mb:128,garbage_collection_threshold:0.8"
+# NOTE:
+# "expandable_segments" is omitted because some PyTorch builds throw
+# a parsing error when this flag is present. The remaining settings keep
+# the memory allocator tuning without tripping those older releases.
 # wan_runner.ps1 — progress-aware runner that shows a console progress bar
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "Continue"
