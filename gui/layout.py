@@ -14,7 +14,7 @@ except Exception:
 APP_TITLE = "WAN 2.2 – A1111-style UI"
 THIS_DIR = Path(__file__).resolve().parent.parent
 
-DEFAULT_RUNNER = (THIS_DIR / "run_wan22.py").as_posix()
+DEFAULT_RUNNER = (THIS_DIR / "wan_ps1_engine.py").as_posix()
 DEFAULT_OUT    = (THIS_DIR / "outputs").as_posix()
 DEFAULT_LORA_DIR = (THIS_DIR / "loras")
 DEFAULT_LORA_DIR.mkdir(parents=True, exist_ok=True)
