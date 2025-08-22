@@ -287,12 +287,31 @@ def main():
             if with_cb:
                 kwargs["callback"] = _cb; kwargs["callback_steps"] = 1
             log(f"Generating… steps={steps} frames={frames} fps={args.fps}")
-            if _sdpa_ctx is not None:
-                with torch.inference_mode(), _sdpa_ctx:
-                    result = pipe(**kwargs)
-            else:
-                with torch.inference_mode():
-                    result = pipe(**kwargs)
+            def _run_pipe():
+                if _sdpa_ctx is not None:
+                    with torch.inference_mode(), _sdpa_ctx:
+                        return pipe(**kwargs)
+                else:
+                    with torch.inference_mode():
+                        return pipe(**kwargs)
+            try:
+                result = _run_pipe()
+            except torch.cuda.OutOfMemoryError:
+                log("CUDA out of memory. Falling back to sequential CPU offload and retrying.")
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                try:
+                    pipe.enable_sequential_cpu_offload()
+                except Exception as e2:
+                    log(f"Sequential CPU offload failed: {e2}; switching to CPU")
+                    try:
+                        pipe.to("cpu")
+                    except Exception as e3:
+                        log(f"CPU move failed: {e3}")
+                        raise
+                result = _run_pipe()
             break
         except TypeError as e:
             last_err = e; continue
