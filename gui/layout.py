@@ -197,7 +197,12 @@ def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=Tru
             text=True,
             cwd=str(THIS_DIR),  # run in D:\wan22 directory
             start_new_session=True,  # allow sending signals to the whole process group
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            env={
+                **os.environ,
+                "PYTHONUNBUFFERED": "1",
+                # Optionally append "allocator=cudaMallocAsync" once supported by the target PyTorch build
+                "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:256,garbage_collection_threshold:0.9",
+            },
         )
         assert PROC.stdout is not None
         for line in PROC.stdout:
