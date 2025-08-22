@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # wan22_webui_a1111.py – A1111-style Gradio UI for WAN 2.2
 
-import os, re, sys, json, time, shutil, random, argparse, subprocess, shlex, socket
+import os, re, sys, json, time, shutil, random, argparse, subprocess, shlex, socket, signal, atexit
 from pathlib import Path
 from typing import List
 
@@ -279,6 +279,19 @@ def interrupt_proc():
         finally:
             PROC = None
     return "No active process."
+
+# Ensure subprocess is terminated when the UI exits or is interrupted
+def _cleanup(signum=None, frame=None):
+    interrupt_proc()
+    if signum in (signal.SIGINT, signal.SIGTERM):
+        raise SystemExit(0)
+
+atexit.register(_cleanup)
+for _sig in (signal.SIGINT, signal.SIGTERM):
+    try:
+        signal.signal(_sig, _cleanup)
+    except Exception:
+        pass
 
 # ---------- Build UI ----------
 CSS = """
