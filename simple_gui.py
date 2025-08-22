@@ -1,4 +1,5 @@
 import subprocess
+import time
 from pathlib import Path
 import gradio as gr
 
@@ -8,6 +9,7 @@ RUNNER = HERE / "run_wan22.py"
 MODEL = HERE / "models" / "TI2V_5B"
 OUTDIR = HERE / "outputs"
 OUTDIR.mkdir(exist_ok=True)
+TIMEOUT = 600  # seconds
 
 # Sanity checks for essential files
 if not RUNNER.exists():
@@ -38,18 +40,32 @@ def generate(prompt, neg="", steps=20, width=576, height=320, fps=24, frames=48,
     if neg and neg.strip():
         cmd += ["--neg_prompt", neg]
 
+    start_time = time.time()
     try:
         proc = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=TIMEOUT,
         )
         logs = proc.stdout
-        video = None
-        videos = sorted(OUTDIR.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if videos:
-            video = str(videos[0])
-        if proc.returncode != 0:
-            logs += f"\n[ERROR] WAN runner exited with code {proc.returncode}"
+        videos = sorted(
+            (p for p in OUTDIR.glob("*.mp4") if p.stat().st_mtime > start_time),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        video = str(videos[0]) if videos else None
+        if proc.returncode != 0 or not video:
+            if proc.returncode != 0:
+                logs += f"\n[ERROR] WAN runner exited with code {proc.returncode}"
+            if not video:
+                logs += "\n[ERROR] No fresh video produced."
+            return logs, None
         return logs, video
+    except subprocess.TimeoutExpired as e:
+        logs = (e.output or "") + f"\n[ERROR] WAN runner timed out after {TIMEOUT}s"
+        return logs, None
     except Exception as e:
         return f"[EXCEPTION] {e}", None
 
