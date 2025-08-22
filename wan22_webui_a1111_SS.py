@@ -84,9 +84,10 @@ def ingest_loras(files, lora_dir: Path) -> List[List]:
         try:
             if src.resolve() != dst.resolve():
                 shutil.copy2(src, dst)
-        except Exception:
-            dst = src if src.exists() else dst
-        rows.append([dst.as_posix(), parse_weight_from_name(dst.name)])
+            rows.append([dst.as_posix(), parse_weight_from_name(dst.name)])
+        except OSError as e:
+            gr.Warning(f"Failed to ingest {src.name}: {e}")
+            continue
     return rows
 
 # ---------- Command builder ----------
