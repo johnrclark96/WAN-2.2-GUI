@@ -65,47 +65,65 @@ def apply_wan_scheduler_fix(pipe, sampler: str, width: int, height: int):
     """
     try:
         from diffusers import FlowMatchEulerDiscreteScheduler, UniPCMultistepScheduler
-    except Exception as e:
-        log(f"Scheduler imports failed: {e}"); return
+    except ImportError as e:
+        log(f"Scheduler imports failed: {e}")
+        return
+
     flow_shift = 5.0 if max(width, height) >= 720 else 3.0
     s = (sampler or "unipc").lower()
-    try:
-        if s in ("euler", "euler_a"):
+
+    if s in ("euler", "euler_a"):
+        try:
+            sched = FlowMatchEulerDiscreteScheduler.from_config(pipe.scheduler.config)
+        except (AttributeError, ValueError) as e:
+            log(f"Using default FlowMatchEulerDiscreteScheduler: {e}")
+            sched = FlowMatchEulerDiscreteScheduler()
+
+        try:
+            sched.register_to_config(shift=flow_shift)
+        except AttributeError:
             try:
-                sched = FlowMatchEulerDiscreteScheduler.from_config(pipe.scheduler.config)
-            except Exception:
-                sched = FlowMatchEulerDiscreteScheduler()
-            # apply shift if supported
+                setattr(sched, "shift", flow_shift)
+            except (AttributeError, TypeError) as e:
+                log(f"Failed to set shift attribute: {e}")
+        except Exception as e:
+            log(f"Failed to apply shift via register_to_config: {e}")
+
+        if s == "euler_a":
             try:
-                sched.register_to_config(shift=flow_shift)
-            except Exception:
-                try: setattr(sched, "shift", flow_shift)
-                except Exception: pass
-            if s == "euler_a":
+                sched.register_to_config(stochastic_sampling=True)
+            except AttributeError:
                 try:
-                    sched.register_to_config(stochastic_sampling=True)
-                except Exception:
-                    try: setattr(sched, "stochastic_sampling", True)
-                    except Exception: pass
-            pipe.scheduler = sched
-            log(f"Scheduler set to {s} (FlowMatchEuler, shift={flow_shift})")
-        else:
+                    setattr(sched, "stochastic_sampling", True)
+                except (AttributeError, TypeError) as e:
+                    log(f"Failed to enable stochastic sampling: {e}")
+            except Exception as e:
+                log(f"Failed to enable stochastic sampling via register_to_config: {e}")
+
+        pipe.scheduler = sched
+        log(f"Scheduler set to {s} (FlowMatchEuler, shift={flow_shift})")
+    else:
+        try:
+            sched = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
+        except (AttributeError, ValueError) as e:
+            log(f"Using default UniPCMultistepScheduler: {e}")
+            sched = UniPCMultistepScheduler()
+
+        for k, v in (("prediction_type", "flow_prediction"),
+                     ("use_flow_sigmas", True),
+                     ("flow_shift", flow_shift)):
             try:
-                sched = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
-            except Exception:
-                sched = UniPCMultistepScheduler()
-            for k, v in (("prediction_type","flow_prediction"),
-                         ("use_flow_sigmas", True),
-                         ("flow_shift", flow_shift)):
+                sched.register_to_config(**{k: v})
+            except AttributeError:
                 try:
-                    sched.register_to_config(**{k: v})
-                except Exception:
-                    try: setattr(sched, k, v)
-                    except Exception: pass
-            pipe.scheduler = sched
-            log(f"Scheduler set to unipc (flow_prediction, use_flow_sigmas=True, shift={flow_shift})")
-    except Exception as e:
-        log(f"Scheduler override skipped: {e}")
+                    setattr(sched, k, v)
+                except (AttributeError, TypeError) as e:
+                    log(f"Failed to set {k}: {e}")
+            except Exception as e:
+                log(f"Failed to configure {k} via register_to_config: {e}")
+
+        pipe.scheduler = sched
+        log("Scheduler set to unipc (flow_prediction, use_flow_sigmas=True, shift={flow_shift})".format(flow_shift=flow_shift))
 
 def round_frames(n: int) -> int:
     if n < 1: return 1
