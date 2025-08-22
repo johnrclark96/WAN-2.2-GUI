@@ -1,5 +1,6 @@
 import subprocess
 import time
+import re
 from pathlib import Path
 import gradio as gr
 
@@ -22,52 +23,90 @@ if not (MODEL / "model_index.json").exists():
     )
 
 
-def generate(prompt, neg="", steps=20, width=576, height=320, fps=24, frames=48, seed=-1):
-    """Run the WAN runner and return its logs and latest video."""
+def generate(
+    prompt,
+    neg="",
+    steps=20,
+    width=576,
+    height=320,
+    fps=24,
+    frames=48,
+    seed=-1,
+    progress=gr.Progress(track_tqdm=True),
+):
+    """Run the WAN runner and stream its logs and latest video with progress."""
     cmd = [
-        "python", str(RUNNER),
-        "--mode", "ti2v",
-        "--prompt", prompt,
-        "--steps", str(int(steps)),
-        "--width", str(int(width)),
-        "--height", str(int(height)),
-        "--fps", str(int(fps)),
-        "--frames", str(int(frames)),
-        "--seed", str(int(seed)),
-        "--outdir", str(OUTDIR),
-        "--base", str(MODEL),
+        "python",
+        str(RUNNER),
+        "--mode",
+        "ti2v",
+        "--prompt",
+        prompt,
+        "--steps",
+        str(int(steps)),
+        "--width",
+        str(int(width)),
+        "--height",
+        str(int(height)),
+        "--fps",
+        str(int(fps)),
+        "--frames",
+        str(int(frames)),
+        "--seed",
+        str(int(seed)),
+        "--outdir",
+        str(OUTDIR),
+        "--base",
+        str(MODEL),
     ]
     if neg and neg.strip():
         cmd += ["--neg_prompt", neg]
 
+    logs = ""
     start_time = time.time()
+    progress(0.0, desc="Starting")
+    yield logs, None
+
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=TIMEOUT,
+            bufsize=1,
         )
-        logs = proc.stdout
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            logs += line
+            # Detect progress lines like: [PROGRESS] ... percent=42
+            m = re.search(r"percent=(\d+)", line)
+            if m:
+                pct = int(m.group(1))
+                progress(pct / 100.0, desc=f"Generating {pct}%")
+            if "Loading model" in line:
+                progress(0.0, desc="Importing model")
+            yield logs, None
+        rc = proc.wait()
         videos = sorted(
             (p for p in OUTDIR.glob("*.mp4") if p.stat().st_mtime > start_time),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
         video = str(videos[0]) if videos else None
-        if proc.returncode != 0 or not video:
-            if proc.returncode != 0:
-                logs += f"\n[ERROR] WAN runner exited with code {proc.returncode}"
+        if rc != 0 or not video:
+            if rc != 0:
+                logs += f"\n[ERROR] WAN runner exited with code {rc}"
             if not video:
                 logs += "\n[ERROR] No fresh video produced."
-            return logs, None
-        return logs, video
-    except subprocess.TimeoutExpired as e:
-        logs = (e.output or "") + f"\n[ERROR] WAN runner timed out after {TIMEOUT}s"
-        return logs, None
+            progress(0, desc="Error")
+            yield logs, None
+            return
+        progress(1.0, desc="Done")
+        yield logs, video
     except Exception as e:
-        return f"[EXCEPTION] {e}", None
+        logs += f"\n[EXCEPTION] {e}"
+        progress(0, desc="Error")
+        yield logs, None
 
 
 with gr.Blocks(title="WAN 2.2 Lite") as demo:
