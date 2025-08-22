@@ -1,4 +1,4 @@
-﻿import argparse, json, os, sys, time, gc
+import argparse, json, os, sys, time, gc
 from typing import Optional
 
 # ---- SDPA shim to ignore unexpected kwargs (e.g. enable_gqa) ----
