@@ -423,9 +423,20 @@ def generate(**params):
         pipe = _init_pipe(params.get("model_dir"), params.get("dtype", "bfloat16"))
         return _generate_with_pipe(pipe, params)
 
-    rq = mp.Queue()
-    _JOB_QUEUE.put((params, rq))
-    result = rq.get()
+    # On Windows, multiprocessing uses the 'spawn' start method which cannot
+    # pickle ``mp.Queue`` instances after process start.  Passing a standard
+    # Queue through another queue (as we do for the response channel) raises
+    # ``RuntimeError: Queue objects should only be shared between processes
+    # through inheritance``.  Using a ``multiprocessing.Manager`` provides a
+    # proxy object that *can* be safely serialized and shared.
+    mgr = mp.Manager()
+    try:
+        rq = mgr.Queue()
+        _JOB_QUEUE.put((params, rq))
+        result = rq.get()
+    finally:
+        mgr.shutdown()
+
     if isinstance(result, dict) and result.get("error"):
         raise RuntimeError(result["error"])
     return result
