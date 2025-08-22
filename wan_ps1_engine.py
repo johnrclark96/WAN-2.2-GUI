@@ -164,16 +164,17 @@ def normalize_resolution(pipe, w: int, h: int):
     return w, h
 
 def save_video(frames, fps: int, outpath: str):
-    import imageio, torch
-    writer = imageio.get_writer(outpath, fps=fps)
+    """Stream frames to an ffmpeg writer without manual cache clearing."""
+    import imageio_ffmpeg as ffmpeg, numpy as np
+    frames = iter(frames)
+    first = np.asarray(next(frames))
+    h, w = first.shape[:2]
+    writer = ffmpeg.write_frames(outpath, size=(w, h), fps=fps)
+    writer.send(None)
     try:
+        writer.send(first)
         for frame in frames:
-            writer.append_data(frame)
-            del frame
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
+            writer.send(np.asarray(frame))
     finally:
         writer.close()
 
@@ -285,10 +286,6 @@ def main():
         pipe.enable_attention_slicing()
     except Exception:
         pass
-    try:
-        torch.cuda.empty_cache()
-    except Exception:
-        pass
 
     # Scheduler
     apply_wan_scheduler_fix(pipe, args.sampler, width, height)
@@ -346,10 +343,6 @@ def main():
                 result = _run_pipe()
             except torch.cuda.OutOfMemoryError:
                 log("CUDA out of memory. Falling back to sequential CPU offload and retrying.")
-                try:
-                    torch.cuda.empty_cache()
-                except Exception:
-                    pass
                 try:
                     pipe.enable_sequential_cpu_offload()
                 except Exception as e2:
