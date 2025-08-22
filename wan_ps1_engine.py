@@ -31,12 +31,19 @@ def _patch_sdpa_for_gqa():
             return _shim
 
         for m in modules:
-            fn = getattr(m, "scaled_dot_product_attention", None)
-            if not fn:
-                continue
-            if "enable_gqa" in inspect.signature(fn).parameters:
-                continue
-            setattr(m, "scaled_dot_product_attention", _make_shim(fn))
+            try:
+                fn = getattr(m, "scaled_dot_product_attention", None)
+                if not fn:
+                    continue
+                try:
+                    sig = inspect.signature(fn)
+                except (ValueError, TypeError):
+                    sig = None
+                if sig and "enable_gqa" in sig.parameters:
+                    continue
+                setattr(m, "scaled_dot_product_attention", _make_shim(fn))
+            except Exception:
+                pass
     except Exception:
         pass
 
