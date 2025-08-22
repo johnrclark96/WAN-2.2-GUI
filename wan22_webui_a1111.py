@@ -172,7 +172,7 @@ def build_cmd(
 
 # ---------- Subprocess runner ----------
 PROC = None
-def stream_run(cmd: List[str], outdir: Path):
+def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=True)):
     """
     Run the generation subprocess and yield (logs, video_path, info_dict) for streaming.
     """
@@ -181,7 +181,9 @@ def stream_run(cmd: List[str], outdir: Path):
     video = None
     info = {"command": " ".join(cmd)}
     start_time = time.time()
+    had_error = False
 
+    progress(0.0, desc="Starting")
     # Initial yield (empty) to refresh UI immediately
     yield logs, None, info
 
@@ -197,6 +199,23 @@ def stream_run(cmd: List[str], outdir: Path):
         assert PROC.stdout is not None
         for line in PROC.stdout:
             logs += line
+            # Update progress based on runner messages
+            if "[PROGRESS]" in line:
+                text = line.split("[PROGRESS]", 1)[1].strip()
+                m_pct = re.search(r"percent=(\d+)", text)
+                if m_pct:
+                    pct = int(m_pct.group(1))
+                    desc = re.sub(r"percent=\d+", "", text).strip() or f"Generating {pct}%"
+                    progress(pct / 100.0, desc=desc)
+                else:
+                    progress(0, desc=text)
+            else:
+                if "Loading model" in line:
+                    progress(0.0, desc="Importing model")
+                m_pct = re.search(r"percent=(\d+)", line)
+                if m_pct:
+                    pct = int(m_pct.group(1))
+                    progress(pct / 100.0, desc=f"Generating {pct}%")
             # Detect a saved output path in the engine logs:
             m = re.search(r"(saved|wrote|output)[:\s]+(.+\.(?:mp4|gif|webm|mov))", line, re.I)
             if m and not video:
@@ -209,10 +228,16 @@ def stream_run(cmd: List[str], outdir: Path):
         rc = PROC.wait()
         info["return_code"] = rc
         logs += f"\n[Exit code] {rc}\n"
+        if rc != 0:
+            had_error = True
     except FileNotFoundError as e:
         logs += f"\n[ERROR] {e}\nCheck the 'Runner path' and ensure the Python script exists.\n"
+        had_error = True
+        progress(0, desc="Error")
     except Exception as e:
         logs += f"\n[ERROR] {e}\n"
+        had_error = True
+        progress(0, desc="Error")
     finally:
         # If no video caught in logs, try finding the newest file in outdir as fallback
         if not video and outdir.exists():
@@ -228,6 +253,10 @@ def stream_run(cmd: List[str], outdir: Path):
             if newest:
                 video = newest.as_posix()
         PROC = None
+        if had_error or not video:
+            progress(0, desc="Error")
+        else:
+            progress(1.0, desc="Done")
         yield logs, video, info
 
 def interrupt_proc():
@@ -351,9 +380,8 @@ def build_ui():
                 def send_txt_to_img(p, n):
                     # Send prompt/negatives from txt2vid to img2vid tab
                     return p, n
-                send_to_img.click(send_txt_to_img, inputs=[prompt, neg], outputs=[])
 
-                def do_generate_txt(p, n, samp, st, w, h, f_fps, f_frames, bcnt, bsz, cfg_s, seed_s, loras_tbl, model_choice, runner_p, out_dir, extra_flags):
+                def do_generate_txt(p, n, samp, st, w, h, f_fps, f_frames, bcnt, bsz, cfg_s, seed_s, loras_tbl, model_choice, runner_p, out_dir, extra_flags, progress=gr.Progress(track_tqdm=True)):
                     # Validate early
                     if not (p or "").strip():
                         raise gr.Error("Prompt is required for txt2vid.")
@@ -383,7 +411,7 @@ def build_ui():
                         lora_rows=loras_tbl, outdir=out_dir, extra=extra_flags
                     )
                     # Stream output (this function yields incremental results for console/video)
-                    yield from stream_run(cmd, Path(out_dir))
+                    yield from stream_run(cmd, Path(out_dir), progress)
 
                 # Connect generate button (txt2vid)
                 generate.click(
@@ -456,9 +484,8 @@ def build_ui():
 
                 def send_img_to_txt(p, n):
                     return p, n
-                send_to_txt.click(send_img_to_txt, inputs=[prompt2, neg2], outputs=[])
 
-                def do_generate_img(p, n, init, samp, st, w, h, f_fps, f_frames, bcnt, bsz, cfg_s, seed_s, loras_tbl, model_choice2, runner_p, out_dir, extra_flags):
+                def do_generate_img(p, n, init, samp, st, w, h, f_fps, f_frames, bcnt, bsz, cfg_s, seed_s, loras_tbl, model_choice2, runner_p, out_dir, extra_flags, progress=gr.Progress(track_tqdm=True)):
                     # Validate inputs
                     if not init and not (p or "").strip():
                         raise gr.Error("Provide an init image and/or a prompt.")
@@ -490,7 +517,7 @@ def build_ui():
                         batch_count=bcnt, batch_size=bsz,
                         lora_rows=loras_tbl, outdir=out_dir, extra=extra_flags
                     )
-                    yield from stream_run(cmd, Path(out_dir))
+                    yield from stream_run(cmd, Path(out_dir), progress)
 
                 generate2.click(
                     do_generate_img,
@@ -498,6 +525,10 @@ def build_ui():
                     outputs=[console2, result_video2, gen_info2]
                 )
                 interrupt2.click(lambda: interrupt_proc(), inputs=[], outputs=[console2])
+
+                # Cross-tab prompt transfer
+                send_to_img.click(send_txt_to_img, inputs=[prompt, neg], outputs=[prompt2, neg2])
+                send_to_txt.click(send_img_to_txt, inputs=[prompt2, neg2], outputs=[prompt, neg])
 
             # ===================== CONSOLE TAB =====================
             with gr.Tab("Console"):
