@@ -149,12 +149,18 @@ def normalize_resolution(pipe, w: int, h: int):
     return w, h
 
 def save_video(frames, fps: int, outpath: str):
-    import numpy as np
-    from diffusers.utils import export_to_video
-    arr = np.asarray(frames)
-    if not np.isfinite(arr).all():
-        arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
-    export_to_video(arr, outpath, fps=fps)
+    import imageio, torch
+    writer = imageio.get_writer(outpath, fps=fps)
+    try:
+        for frame in frames:
+            writer.append_data(frame)
+            del frame
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+    finally:
+        writer.close()
 
 def main():
     p = argparse.ArgumentParser()
@@ -266,6 +272,21 @@ def main():
     if frames != args.frames:
         log("`num_frames - 1` has to be divisible by 4. Rounding to the nearest number.")
 
+    os.makedirs(args.outdir, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    base  = f"WAN22_{args.mode}_{stamp}"
+    json_path = os.path.join(args.outdir, base + ".json")
+    mp4_path  = os.path.join(args.outdir, base + ".mp4")
+
+    meta = {
+        "mode": args.mode, "prompt": args.prompt, "neg_prompt": args.neg_prompt,
+        "sampler": args.sampler, "steps": steps, "cfg": args.cfg, "seed": args.seed,
+        "fps": args.fps, "frames": frames, "width": width, "height": height, "model_dir": model_dir,
+    }
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+    log(f"wrote: {json_path}")
+
     # Progress callback
     steps_total = max(1, steps)
     def _cb(step, timestep, latents):
@@ -309,21 +330,12 @@ def main():
     if frames_out is None:
         log("No frames returned from pipeline"); return 5
 
-    os.makedirs(args.outdir, exist_ok=True)
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    base  = f"WAN22_{args.mode}_{stamp}"
-    json_path = os.path.join(args.outdir, base + ".json")
-    mp4_path  = os.path.join(args.outdir, base + ".mp4")
+    def _frame_gen(frames_list):
+        for i, frame in enumerate(frames_list):
+            yield frame
+            frames_list[i] = None
 
-    meta = {
-        "mode": args.mode, "prompt": args.prompt, "neg_prompt": args.neg_prompt,
-        "sampler": args.sampler, "steps": steps, "cfg": args.cfg, "seed": args.seed,
-        "fps": args.fps, "frames": frames, "width": width, "height": height, "model_dir": model_dir,
-    }
-    with open(json_path, "w", encoding="utf-8") as f: json.dump(meta, f, indent=2)
-    log(f"wrote: {json_path}")
-
-    save_video(frames_out, args.fps, mp4_path)
+    save_video(_frame_gen(frames_out), args.fps, mp4_path)
     log(f"wrote: {mp4_path}")
     del result, frames_out, pipe
     gc.collect()
