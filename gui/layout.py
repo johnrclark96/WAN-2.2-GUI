@@ -356,6 +356,10 @@ STYLES = {
 
 SAMPLERS = ["ddim", "dpmpp_2m_sde", "dpmpp_3m_sde", "unipc", "euler_a"]
 
+# Supported resolutions for WAN 2.2
+WIDTH_OPTS = list(range(320, 1921, 64))
+HEIGHT_OPTS = list(range(240, 1081, 16))
+
 def build_app():
     with gr.Blocks(title=APP_TITLE, css=CSS, theme=gr.themes.Soft()) as demo:
         gr.Markdown(f"## {APP_TITLE}", elem_id="app-title")
@@ -383,8 +387,8 @@ def build_app():
                             steps = gr.Slider(1, 80, value=20, step=1, label="Sampling steps")
 
                         with gr.Row():
-                            width = gr.Slider(320, 1920, value=1024, step=64, label="Width")
-                            height = gr.Slider(240, 1080, value=576, step=16, label="Height")
+                            width = gr.Dropdown(choices=WIDTH_OPTS, value=1024, label="Width")
+                            height = gr.Dropdown(choices=HEIGHT_OPTS, value=576, label="Height")
 
                         with gr.Row():
                             fps = gr.Slider(1, 60, value=24, step=1, label="FPS")
@@ -498,8 +502,8 @@ def build_app():
                             steps2 = gr.Slider(1, 80, value=20, step=1, label="Sampling steps")
 
                         with gr.Row():
-                            width2 = gr.Slider(320, 1920, value=1024, step=64, label="Width")
-                            height2 = gr.Slider(240, 1080, value=576, step=16, label="Height")
+                            width2 = gr.Dropdown(choices=WIDTH_OPTS, value=1024, label="Width")
+                            height2 = gr.Dropdown(choices=HEIGHT_OPTS, value=576, label="Height")
 
                         with gr.Row():
                             fps2 = gr.Slider(1, 60, value=24, step=1, label="FPS")
