@@ -14,7 +14,7 @@ except Exception:
 APP_TITLE = "WAN 2.2 – A1111-style UI"
 THIS_DIR = Path(__file__).resolve().parent.parent
 
-DEFAULT_RUNNER = (THIS_DIR / "run_wan22.py").as_posix()
+DEFAULT_RUNNER = (THIS_DIR / "wan_ps1_engine.py").as_posix()
 DEFAULT_OUT    = (THIS_DIR / "outputs").as_posix()
 DEFAULT_LORA_DIR = (THIS_DIR / "loras")
 DEFAULT_LORA_DIR.mkdir(parents=True, exist_ok=True)
@@ -208,31 +208,54 @@ def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=Tru
         assert PROC.stdout is not None
         for line in PROC.stdout:
             logs += line
-            # Update progress based on runner messages
-            if "[PROGRESS]" in line:
-                text = line.split("[PROGRESS]", 1)[1].strip()
-                m_pct = re.search(r"percent=(\d+)", text)
-                if m_pct:
-                    pct = int(m_pct.group(1))
-                    desc = re.sub(r"percent=\d+", "", text).strip() or f"Generating {pct}%"
+            handled = False
+            # Try JSON-formatted messages first
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                msg = None
+            if isinstance(msg, dict) and msg.get("event"):
+                ev = msg.get("event")
+                if ev == "progress":
+                    pct = int(msg.get("percent", 0))
+                    desc = msg.get("desc") or f"Generating {pct}%"
                     progress(pct / 100.0, desc=desc)
+                    handled = True
+                elif ev == "done":
+                    path = msg.get("video")
+                    if path and not video:
+                        p = Path(path)
+                        if not p.is_absolute():
+                            p = (outdir / p).resolve()
+                        if p.exists():
+                            video = p.as_posix()
+                    handled = True
+            if not handled:
+                # Fallback to legacy text parsing
+                if "[PROGRESS]" in line:
+                    text = line.split("[PROGRESS]", 1)[1].strip()
+                    m_pct = re.search(r"percent=(\d+)", text)
+                    if m_pct:
+                        pct = int(m_pct.group(1))
+                        desc = re.sub(r"percent=\d+", "", text).strip() or f"Generating {pct}%"
+                        progress(pct / 100.0, desc=desc)
+                    else:
+                        progress(0, desc=text)
                 else:
-                    progress(0, desc=text)
-            else:
-                if "Loading model" in line:
-                    progress(0.0, desc="Importing model")
-                m_pct = re.search(r"percent=(\d+)", line)
-                if m_pct:
-                    pct = int(m_pct.group(1))
-                    progress(pct / 100.0, desc=f"Generating {pct}%")
-            # Detect a saved output path in the engine logs:
-            m = re.search(r"(saved|wrote|output)[:\s]+(.+\.(?:mp4|gif|webm|mov))", line, re.I)
-            if m and not video:
-                p = Path(m.group(2).strip().strip('"'))
-                if not p.is_absolute():
-                    p = (outdir / p).resolve()
-                if p.exists():
-                    video = p.as_posix()
+                    if "Loading model" in line:
+                        progress(0.0, desc="Importing model")
+                    m_pct = re.search(r"percent=(\d+)", line)
+                    if m_pct:
+                        pct = int(m_pct.group(1))
+                        progress(pct / 100.0, desc=f"Generating {pct}%")
+                # Detect a saved output path in the engine logs:
+                m = re.search(r"(saved|wrote|output)[:\s]+(.+\.(?:mp4|gif|webm|mov))", line, re.I)
+                if m and not video:
+                    p = Path(m.group(2).strip().strip('"'))
+                    if not p.is_absolute():
+                        p = (outdir / p).resolve()
+                    if p.exists():
+                        video = p.as_posix()
             yield logs, video, info
         rc = PROC.wait()
         info["return_code"] = rc

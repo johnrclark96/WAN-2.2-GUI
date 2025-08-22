@@ -1,4 +1,5 @@
 import argparse, json, os, sys, time, gc, inspect
+
 from typing import Optional
 
 # ---- SDPA helper to ignore unsupported kwargs (e.g. enable_gqa) ----
@@ -23,6 +24,11 @@ def _patch_sdpa_for_gqa():
 _patch_sdpa_for_gqa()
 
 # --- perf: tf32 + sdpa kernels ---
+# global pipeline/worker state
+_PIPE = None
+_JOB_QUEUE = None
+_WORKER = None
+
 _sdpa_ctx = None
 try:
     import torch
@@ -186,76 +192,26 @@ def save_video(frames, fps: int, outpath: str):
     finally:
         writer.close()
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--mode", default="t2v", choices=["t2v","i2v","ti2v"])
-    p.add_argument("--prompt", default="");            p.add_argument("--neg_prompt", default="")
-    p.add_argument("--sampler", default="unipc");      p.add_argument("--steps", type=int, default=20)
-    p.add_argument("--cfg", type=float, default=7.0);  p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--fps", type=int, default=24);     p.add_argument("--frames", type=int, default=49)
-    p.add_argument("--width", type=int, default=1024); p.add_argument("--height", type=int, default=576)
-    p.add_argument("--batch_count", type=int, default=1); p.add_argument("--batch_size", type=int, default=1)
-    p.add_argument("--outdir", default="outputs");     p.add_argument("--model_dir", default="")
-    p.add_argument("--dtype", default="bfloat16")
-    args = p.parse_args()
-
+def _init_pipe(model_dir: Optional[str], dtype: str):
+    """Load and cache the diffusers pipeline."""
+    global _PIPE
+    if _PIPE is not None:
+        return _PIPE
     try:
         import torch
     except Exception as e:
-        log(f"PyTorch import failed: {e}"); return 1
+        log(f"PyTorch import failed: {e}")
+        raise
 
     root = os.path.dirname(os.path.abspath(__file__))
-    model_dir = args.model_dir or detect_model_dir(root)
+    model_dir = model_dir or detect_model_dir(root)
     if not model_dir:
-        log("Model directory not found. Set --model_dir or WAN22_MODEL_DIR."); return 2
+        raise RuntimeError("Model directory not found. Set --model_dir or WAN22_MODEL_DIR.")
 
-    # Seed (optional)
-    try:
-        g = torch.Generator(device="cuda")
-        if args.seed:
-            g.manual_seed(args.seed)
-    except Exception:
-        g = None
-
-    # Build pipeline
     log(f"Loading model: {model_dir}")
-    pipe = build_pipe(model_dir, args.dtype)
+    pipe = build_pipe(model_dir, dtype)
 
-    # Snap resolution to model granularity
-    width, height = normalize_resolution(pipe, int(args.width), int(args.height))
-
-    # Move model weights to GPU when possible, otherwise fall back to CPU offload
     use_cuda = torch.cuda.is_available()
-    free_mem = total_mem = 0
-    if use_cuda:
-        try:
-            free_mem, total_mem = torch.cuda.mem_get_info()
-            log(f"VRAM free={free_mem/1e9:.2f}GB total={total_mem/1e9:.2f}GB")
-            dtype = getattr(torch, args.dtype, torch.bfloat16)
-            dtype_size = torch.tensor([], dtype=dtype).element_size()
-            # Diffusers pipelines don't expose a direct `parameters()` method.
-            # Sum parameter sizes for each component that has `parameters`.
-            param_mem = 0
-            try:
-                comps = getattr(pipe, "components", {})
-                if isinstance(comps, dict):
-                    for comp in comps.values():
-                        if hasattr(comp, "parameters"):
-                            param_mem += sum(p.numel() * p.element_size() for p in comp.parameters())
-                elif hasattr(pipe, "parameters"):
-                    param_mem = sum(p.numel() * p.element_size() for p in pipe.parameters())
-            except Exception as pe:
-                log(f"Parameter memory calc failed: {pe}")
-            est_frames = max(1, int(args.frames))
-            frame_mem = width * height * est_frames * 4 * dtype_size
-            required_mem = param_mem + frame_mem
-            if required_mem > free_mem:
-                log(f"Insufficient VRAM: need {required_mem/1e9:.2f}GB, have {free_mem/1e9:.2f}GB")
-                use_cuda = False
-        except Exception as e:
-            log(f"VRAM check failed: {e}")
-            use_cuda = False
-
     if use_cuda:
         try:
             pipe.to("cuda")
@@ -276,14 +232,14 @@ def main():
                 log("Falling back to CPU offload")
             except Exception as e2:
                 log(f"CPU offload failed: {e2}")
-                return 3
+                raise
     else:
         try:
             pipe.enable_model_cpu_offload()
             log("Falling back to CPU/offload mode")
         except Exception as e2:
             log(f"CPU offload failed: {e2}")
-            return 3
+            raise
 
     # Optional memory tweaks
     try:
@@ -299,51 +255,78 @@ def main():
     except Exception:
         pass
 
-    # Scheduler
-    apply_wan_scheduler_fix(pipe, args.sampler, width, height)
+    _PIPE = pipe
+    return _PIPE
 
-    # Frames rule
-    steps  = int(args.steps)
-    frames = round_frames(int(args.frames))
-    if frames != args.frames:
+def _generate_with_pipe(pipe, params: dict):
+    """Generate video using an existing pipeline instance."""
+    import torch
+
+    mode = params.get("mode", "t2v")
+    prompt = params.get("prompt", "")
+    neg_prompt = params.get("neg_prompt", "")
+    sampler = params.get("sampler", "unipc")
+    steps = int(params.get("steps", 20))
+    cfg = float(params.get("cfg", 7.0))
+    seed = int(params.get("seed", 0))
+    fps = int(params.get("fps", 24))
+    frames_req = int(params.get("frames", 49))
+    width_req = int(params.get("width", 1024))
+    height_req = int(params.get("height", 576))
+    outdir = params.get("outdir", "outputs")
+
+    # Seed (optional)
+    try:
+        g = torch.Generator(device="cuda")
+        if seed:
+            g.manual_seed(seed)
+    except Exception:
+        g = None
+
+    # Snap resolution to model granularity
+    width, height = normalize_resolution(pipe, width_req, height_req)
+
+    apply_wan_scheduler_fix(pipe, sampler, width, height)
+
+    frames = round_frames(frames_req)
+    if frames != frames_req:
         log("`num_frames - 1` has to be divisible by 4. Rounding to the nearest number.")
 
-    os.makedirs(args.outdir, exist_ok=True)
+    os.makedirs(outdir, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    base  = f"WAN22_{args.mode}_{stamp}"
-    json_path = os.path.join(args.outdir, base + ".json")
-    mp4_path  = os.path.join(args.outdir, base + ".mp4")
+    base  = f"WAN22_{mode}_{stamp}"
+    json_path = os.path.join(outdir, base + ".json")
+    mp4_path  = os.path.join(outdir, base + ".mp4")
 
     meta = {
-        "mode": args.mode, "prompt": args.prompt, "neg_prompt": args.neg_prompt,
-        "sampler": args.sampler, "steps": steps, "cfg": args.cfg, "seed": args.seed,
-        "fps": args.fps, "frames": frames, "width": width, "height": height, "model_dir": model_dir,
+        "mode": mode, "prompt": prompt, "neg_prompt": neg_prompt,
+        "sampler": sampler, "steps": steps, "cfg": cfg, "seed": seed,
+        "fps": fps, "frames": frames, "width": width, "height": height,
     }
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
     log(f"wrote: {json_path}")
 
-    # Progress callback
     steps_total = max(1, steps)
     def _cb(step, timestep, latents):
         cur = int(step) + 1
         pct = int(min(100, max(0, round(cur * 100 / steps_total))))
-        print(f"[PROGRESS] step={cur}/{steps_total} frame=1/{frames} percent={pct}", flush=True)
+        msg = {"event": "progress", "step": cur, "total": steps_total, "percent": pct}
+        print(json.dumps(msg), flush=True)
 
     common = dict(
-        prompt=args.prompt, negative_prompt=args.neg_prompt or None,
+        prompt=prompt, negative_prompt=neg_prompt or None,
         width=width, height=height, num_inference_steps=steps,
-        guidance_scale=args.cfg, num_frames=frames, generator=g, output_type="np",
+        guidance_scale=cfg, num_frames=frames, generator=g, output_type="np",
     )
 
-    # Call with/without callback depending on diffusers version
     result, last_err = None, None
     for with_cb in (True, False):
         try:
             kwargs = dict(common)
             if with_cb:
                 kwargs["callback"] = _cb; kwargs["callback_steps"] = 1
-            log(f"Generating… steps={steps} frames={frames} fps={args.fps}")
+            log(f"Generating… steps={steps} frames={frames} fps={fps}")
             def _run_pipe():
                 if _sdpa_ctx is not None:
                     with torch.inference_mode(), _sdpa_ctx:
@@ -374,9 +357,8 @@ def main():
             last_err = e; continue
 
     if result is None:
-        log(f"Pipeline call failed: {last_err}"); return 4
+        raise RuntimeError(f"Pipeline call failed: {last_err}")
 
-    # Extract frames
     frames_out = None
     if isinstance(result, dict):
         frames_out = result.get("frames")
@@ -387,21 +369,91 @@ def main():
         if frames_out is None:
             frames_out = getattr(result, "images", None)
     if frames_out is None:
-        log("No frames returned from pipeline"); return 5
+        raise RuntimeError("No frames returned from pipeline")
 
     def _frame_gen(frames_list):
         for i, frame in enumerate(frames_list):
             yield frame
             frames_list[i] = None
 
-    save_video(_frame_gen(frames_out), args.fps, mp4_path)
+    save_video(_frame_gen(frames_out), fps, mp4_path)
     log(f"wrote: {mp4_path}")
+
+    print(json.dumps({"event": "done", "video": mp4_path}), flush=True)
     del result, frames_out, pipe
     gc.collect()
     try:
         torch.cuda.empty_cache()
     except Exception:
         pass
+
+    return {"json": json_path, "mp4": mp4_path}
+
+def _worker_loop(q, model_dir, dtype):
+    try:
+        pipe = _init_pipe(model_dir, dtype)
+    except Exception as e:
+        log(f"Worker failed to initialize pipeline: {e}")
+        return
+    while True:
+        task = q.get()
+        if task is None:
+            break
+        params, rq = task
+        try:
+            res = _generate_with_pipe(pipe, params)
+            rq.put(res)
+        except Exception as e:
+            rq.put({"error": str(e)})
+
+def init_worker(model_dir: Optional[str] = None, dtype: str = "bfloat16"):
+    """Start background worker that holds the pipeline in memory."""
+    global _WORKER, _JOB_QUEUE
+    if _WORKER is not None:
+        return
+    _JOB_QUEUE = mp.Queue()
+    _WORKER = mp.Process(target=_worker_loop, args=(_JOB_QUEUE, model_dir, dtype), daemon=True)
+    _WORKER.start()
+
+def shutdown_worker():
+    global _WORKER, _JOB_QUEUE
+    if _WORKER is None:
+        return
+    _JOB_QUEUE.put(None)
+    _WORKER.join()
+    _WORKER = None
+    _JOB_QUEUE = None
+
+def generate(**params):
+    """Public API to generate a video. Blocks until job completion."""
+    if _JOB_QUEUE is None:
+        pipe = _init_pipe(params.get("model_dir"), params.get("dtype", "bfloat16"))
+        return _generate_with_pipe(pipe, params)
+
+    rq = mp.Queue()
+    _JOB_QUEUE.put((params, rq))
+    result = rq.get()
+    if isinstance(result, dict) and result.get("error"):
+        raise RuntimeError(result["error"])
+    return result
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--mode", default="t2v", choices=["t2v","i2v","ti2v"])
+    p.add_argument("--prompt", default="");            p.add_argument("--neg_prompt", default="")
+    p.add_argument("--sampler", default="unipc");      p.add_argument("--steps", type=int, default=20)
+    p.add_argument("--cfg", type=float, default=7.0);  p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--fps", type=int, default=24);     p.add_argument("--frames", type=int, default=49)
+    p.add_argument("--width", type=int, default=1024); p.add_argument("--height", type=int, default=576)
+    p.add_argument("--batch_count", type=int, default=1); p.add_argument("--batch_size", type=int, default=1)
+    p.add_argument("--outdir", default="outputs");     p.add_argument("--model_dir", default="")
+    p.add_argument("--dtype", default="bfloat16")
+    args = p.parse_args()
+
+    init_worker(args.model_dir, args.dtype)
+    res = generate(**vars(args))
+    log(f"Generation completed: {res}")
+    shutdown_worker()
     return 0
 
 if __name__ == "__main__":
