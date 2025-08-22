@@ -214,12 +214,22 @@ def stream_run(cmd: List[str], outdir: Path):
 
 def interrupt_proc():
     global PROC
-    if PROC and PROC.poll() is None:
+    if PROC:
         try:
-            PROC.terminate()
-            return "Interrupted."
+            if PROC.poll() is None:
+                PROC.terminate()
+                try:
+                    PROC.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    PROC.kill()
+                    PROC.wait()
+                return "Interrupted."
+            else:
+                return "No active process."
         except Exception as e:
             return f"Failed: {e}"
+        finally:
+            PROC = None
     return "No active process."
 
 # ---------- UI ----------
