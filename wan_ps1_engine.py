@@ -140,6 +140,11 @@ def main():
     p.add_argument("--dtype", default="bfloat16")
     args = p.parse_args()
 
+    try:
+        import torch
+    except Exception as e:
+        log(f"PyTorch import failed: {e}"); return 1
+
     root = os.path.dirname(os.path.abspath(__file__))
     model_dir = args.model_dir or detect_model_dir(root)
     if not model_dir:
@@ -149,9 +154,9 @@ def main():
 
     # Seed (optional)
     try:
-        import torch
         g = torch.Generator(device="cuda")
-        if args.seed: g.manual_seed(args.seed)
+        if args.seed:
+            g.manual_seed(args.seed)
     except Exception:
         g = None
 
@@ -159,26 +164,28 @@ def main():
     log(f"Loading model: {model_dir}")
     pipe = build_pipe(model_dir, args.dtype)
 
-    # Move model weights to GPU
+    # Move model weights to GPU and favour channel-last tensors for efficiency
     try:
         pipe.to("cuda")
+        try: pipe.unet.to(memory_format=torch.channels_last)
+        except Exception: pass
+        try: pipe.text_encoder.to(memory_format=torch.channels_last)
+        except Exception: pass
     except Exception as e:
         log(f"Failed to move pipe to CUDA: {e}"); return 3
 
-    # Free VRAM: keep VAE on CPU and enable slicing
+    # Free VRAM: keep VAE on CPU and enable slicing/tiling
     try:
         pipe.vae.to("cpu")
-        try: pipe.enable_vae_slicing()
-        except Exception: pass
+        try:
+            pipe.enable_vae_slicing(); pipe.enable_vae_tiling()
+        except Exception:
+            pass
         try: pipe.enable_attention_slicing()
         except Exception: pass
-        log("VAE moved to CPU (float32) with slicing; attention slicing enabled.")
-        # Optional: xFormers if present
-        try:
-            pipe.enable_xformers_memory_efficient_attention()
-            log("xFormers memory-efficient attention enabled.")
-        except Exception as _e:
-            log(f"xFormers not available or failed: {_e}")
+        log("VAE moved to CPU (float32) with slicing/tiling; attention slicing enabled.")
+        try: torch.cuda.empty_cache()
+        except Exception: pass
     except Exception as _e:
         log(f"VAE/attention memory tweaks skipped: {_e}")
 
@@ -212,7 +219,9 @@ def main():
             if with_cb:
                 kwargs["callback"] = _cb; kwargs["callback_steps"] = 1
             log(f"Generating… steps={steps} frames={frames} fps={args.fps}")
-            result = pipe(**kwargs); break
+            with torch.inference_mode():
+                result = pipe(**kwargs)
+            break
         except TypeError as e:
             last_err = e; continue
 

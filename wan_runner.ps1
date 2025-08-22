@@ -1,4 +1,12 @@
-﻿$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:true,max_split_size_mb:128,garbage_collection_threshold:0.8"
+# Tune CUDA memory allocator to reduce VRAM thrashing.
+# Use a higher split size so large blocks can be reused and raise the
+# garbage collection threshold so the allocator holds onto memory a bit
+# longer instead of constantly releasing and re-requesting from the driver.
+$env:PYTORCH_CUDA_ALLOC_CONF = "max_split_size_mb:256,garbage_collection_threshold:0.9"
+# NOTE:
+# "expandable_segments" is omitted because some PyTorch builds throw
+# a parsing error when this flag is present. The remaining settings keep
+# the memory allocator tuning without tripping those older releases.
 # wan_runner.ps1 — progress-aware runner that shows a console progress bar
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "Continue"
