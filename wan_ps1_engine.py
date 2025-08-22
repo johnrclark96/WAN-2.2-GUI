@@ -55,6 +55,21 @@ def build_pipe(model_dir: str, dtype_str: str = "bfloat16"):
     import torch
     from diffusers import WanPipeline, AutoModel
     torch_dtype = getattr(torch, dtype_str, torch.bfloat16)
+
+    # The VAE's config may contain stale keys (e.g. clip_output) that newer
+    # diffusers versions warn about. Remove them before loading to keep the
+    # console clean and avoid confusing users.
+    cfg_path = os.path.join(model_dir, "vae", "config.json")
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        if cfg.pop("clip_output", None) is not None:
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+            log("Removed deprecated 'clip_output' from VAE config")
+    except Exception as e:
+        log(f"VAE config cleanup failed: {e}")
+
     # Keep VAE numerics in float32 for stability
     vae = AutoModel.from_pretrained(model_dir, subfolder="vae", torch_dtype=torch.float32)
     pipe = WanPipeline.from_pretrained(model_dir, vae=vae, torch_dtype=torch_dtype)
@@ -355,9 +370,13 @@ def main():
     # Extract frames
     frames_out = None
     if isinstance(result, dict):
-        frames_out = result.get("frames") or result.get("images")
+        frames_out = result.get("frames")
+        if frames_out is None:
+            frames_out = result.get("images")
     else:
-        frames_out = getattr(result, "frames", None) or getattr(result, "images", None)
+        frames_out = getattr(result, "frames", None)
+        if frames_out is None:
+            frames_out = getattr(result, "images", None)
     if frames_out is None:
         log("No frames returned from pipeline"); return 5
 
