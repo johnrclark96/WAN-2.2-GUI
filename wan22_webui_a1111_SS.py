@@ -181,14 +181,27 @@ def stream_run(cmd: List[str], outdir: Path):
         assert PROC.stdout is not None
         for line in PROC.stdout:
             logs += line
-            # Try to detect a saved path in logs
-            m = re.search(r"(saved|wrote|output)[:\s]+(.+\.(?:mp4|gif|webm|mov))", line, re.I)
-            if m and not video:
-                p = Path(m.group(2).strip().strip('"'))
-                if not p.is_absolute():
-                    p = (outdir / p).resolve()
-                if p.exists():
-                    video = p.as_posix()
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                msg = None
+            if isinstance(msg, dict) and msg.get("event") == "done":
+                path = msg.get("video")
+                if path and not video:
+                    p = Path(path)
+                    if not p.is_absolute():
+                        p = (outdir / p).resolve()
+                    if p.exists():
+                        video = p.as_posix()
+            else:
+                # Try to detect a saved path in logs
+                m = re.search(r"(saved|wrote|output)[:\s]+(.+\.(?:mp4|gif|webm|mov))", line, re.I)
+                if m and not video:
+                    p = Path(m.group(2).strip().strip('"'))
+                    if not p.is_absolute():
+                        p = (outdir / p).resolve()
+                    if p.exists():
+                        video = p.as_posix()
             yield logs, video, info
         rc = PROC.wait()
         info["return_code"] = rc
