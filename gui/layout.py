@@ -121,7 +121,8 @@ def build_cmd(
         if not Path(init_img).exists():
             raise gr.Error(f"Init image not found: {init_img}")
 
-    cmd = [sys.executable, str(Path(runner).resolve()), "--mode", mode, "--prompt", prompt or ""]
+    # Use unbuffered Python output to allow real-time log streaming
+    cmd = [sys.executable, "-u", str(Path(runner).resolve()), "--mode", mode, "--prompt", prompt or ""]
     if neg:
         cmd += ["--neg_prompt", neg]
     if sampler:
@@ -195,6 +196,8 @@ def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=Tru
             bufsize=1,
             text=True,
             cwd=str(THIS_DIR),  # run in D:\wan22 directory
+            start_new_session=True,  # allow sending signals to the whole process group
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
         assert PROC.stdout is not None
         for line in PROC.stdout:
@@ -265,11 +268,19 @@ def interrupt_proc():
     if PROC:
         try:
             if PROC.poll() is None:
-                PROC.terminate()
                 try:
+                    if os.name == "nt":
+                        # Send CTRL_BREAK_EVENT to the process group on Windows
+                        PROC.send_signal(signal.CTRL_BREAK_EVENT)
+                    else:
+                        os.killpg(PROC.pid, signal.SIGTERM)
                     PROC.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    PROC.kill()
+                    # Fallback to a hard kill
+                    if os.name == "nt":
+                        PROC.kill()
+                    else:
+                        os.killpg(PROC.pid, signal.SIGKILL)
                     PROC.wait()
                 return "Interrupted."
             else:
