@@ -20,10 +20,18 @@ def main():
     print(f"[WAN shim] Launch: {shown}")
 
     # Stream logs to stdout so the web UI console shows them live
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, cwd=str(here)
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=str(here),
+        )
+    except (OSError, FileNotFoundError) as e:
+        print(f"[ERROR] Failed to launch PowerShell or runner: {e}")
+        sys.exit(1)
+
     for line in proc.stdout:
         print(line, end="")
     proc.wait()
