@@ -210,11 +210,16 @@ def main():
     except Exception as e:
         log(f"Failed to move pipe to CUDA: {e}")
         try:
-            pipe.enable_model_cpu_offload()
-            log("Falling back to CPU offload")
-        except Exception as e2:
-            log(f"CPU offload failed: {e2}")
-            return 3
+            pipe.enable_sequential_cpu_offload()
+            log("Falling back to sequential CPU offload")
+        except Exception as e_seq:
+            log(f"Sequential CPU offload unavailable: {e_seq}")
+            try:
+                pipe.enable_model_cpu_offload()
+                log("Falling back to model CPU offload")
+            except Exception as e2:
+                log(f"CPU offload failed: {e2}")
+                return 3
 
     # Optional memory tweaks
     try:
