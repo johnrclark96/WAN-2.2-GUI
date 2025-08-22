@@ -1,4 +1,5 @@
-﻿# wan_runner.ps1 — progress-aware runner that shows a console progress bar
+﻿$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:true,max_split_size_mb:128,garbage_collection_threshold:0.8"
+# wan_runner.ps1 — progress-aware runner that shows a console progress bar
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -63,3 +64,4 @@ while (-not $proc.StandardError.EndOfStream) {
 
 Write-Progress -Id 1 -Activity $activity -Completed
 exit $proc.ExitCode
+

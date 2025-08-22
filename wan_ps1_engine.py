@@ -1,356 +1,250 @@
-﻿#!/usr/bin/env python
-# wan_ps1_engine.py â€” pure Python engine the PS1 calls (no fallback)
+﻿import argparse, json, os, sys, time
+from typing import Optional
 
-import os, re, sys, json, time, argparse, random
-from pathlib import Path
-
-def log(msg): 
-    print(msg, flush=True)
-
-def build_argparser():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["t2v","i2v","ti2v"], required=True)
-    ap.add_argument("--prompt", type=str, default="")
-    ap.add_argument("--neg_prompt", type=str, default="")
-    ap.add_argument("--init_image", type=str, default="")
-    ap.add_argument("--steps", type=int, default=20)
-    ap.add_argument("--cfg", type=float, default=7.0)
-    ap.add_argument("--seed", type=int, default=-1)
-    ap.add_argument("--fps", type=int, default=24)
-    ap.add_argument("--frames", type=int, default=48)
-    ap.add_argument("--width", type=int, default=1024)
-    ap.add_argument("--height", type=int, default=576)
-    ap.add_argument("--sampler", type=str, default="")
-    ap.add_argument("--batch_count", type=int, default=1)
-    ap.add_argument("--batch_size", type=int, default=1)
-    ap.add_argument("--outdir", type=str, default=str((Path(__file__).parent / "outputs").resolve()))
-    ap.add_argument("--model_dir", type=str, default=str((Path(__file__).parent / "models").resolve()))
-    ap.add_argument("--base", type=str, default="", help="Specific model path or HF model ID")
-    ap.add_argument("--lora", action="append", help="LoRA as path[:scale]. Repeatable.")
-    ap.add_argument("--extra", nargs=argparse.REMAINDER, help="Unused; for parity with shim")
-    return ap
-
-def parse_loras(loras):
-    out = []
-    for item in loras or []:
-        item = item.strip('"')
-        if ":" in item:
-            p, s = item.rsplit(":", 1)
-            try: 
-                scale = float(s)
-            except: 
-                scale = 0.8
-        else:
-            p, scale = item, 0.8
-        out.append((Path(p), float(max(0.0, min(2.0, scale)))))
-    return out
-
-def group_lora_keys(sd):
-    # Helper to pair LoRA weight keys
-    ups = [k for k in sd.keys() if k.endswith("lora_up.weight")]
-    for up in ups:
-        base = up[:-len("lora_up.weight")]
-        down = base + "lora_down.weight"
-        alpha = base + "alpha"
-        if down in sd:
-            yield base, up, down, (alpha if alpha in sd else None)
-
-def main():
-    args = build_argparser().parse_args()
-
-    # Lazy-import torch to speed up CLI startup
+# ---- SDPA shim to ignore unexpected kwargs (e.g. enable_gqa) ----
+try:
     import torch
     import torch.nn.functional as _F
     _orig_sdpa = _F.scaled_dot_product_attention
-
     def _sdpa_shim(*args, **kwargs):
-        # Some WAN builds pass 'enable_gqa'; older torch ignores it
         kwargs.pop("enable_gqa", None)
         return _orig_sdpa(*args, **kwargs)
-
     _F.scaled_dot_product_attention = _sdpa_shim
+except Exception:
+    pass
 
+# --- perf: tf32 + sdp kernels ---
+try:
+    import torch
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
     try:
-        from diffusers import DiffusionPipeline
-    except Exception as e:
-        log(f"[ps1-engine] Diffusers import error: {e}")
-        return 2
-
-    model_path = str(args.base if args.base else args.model_dir)
-    mp = Path(model_path)
-    if mp.exists() and mp.is_dir():
-        if not (mp / "model_index.json").exists():
-            # Auto-detect model subdirectory if a single model is present
-            subdirs = [d for d in mp.iterdir() if d.is_dir() and (d/"model_index.json").exists()]
-            if len(subdirs) == 1:
-                model_path = str(subdirs[0])
-                mp = subdirs[0]
-                log(f"[ps1-engine] Auto-detected model path: {model_path}")
-            else:
-                log(f"[ps1-engine] The --base path looks like a local folder but is not a Diffusers model (missing model_index.json): {mp}")
-                return 11
-
-    # Load with trust_remote_code so WAN-specific pipeline classes (WanPipeline) can be used if not built-in
-    pipe = None
-    try:
-        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        log(f"[ps1-engine] Loading model with remote code: {model_path}")
-        pipe = DiffusionPipeline.from_pretrained(
-            model_path,
-            torch_dtype=dtype,
-            trust_remote_code=True
-        )
-    except Exception as e:
-        log(f"[ps1-engine] Could not load pipeline from {model_path}: {e}")
-        return 3
-
-    # Move pipeline to GPU (or CPU) with memory optimization if available
-    if hasattr(pipe, "enable_model_cpu_offload"):
-        try:
-            pipe.enable_model_cpu_offload()  # offload to CPU when not in use to save VRAM
-        except Exception:
-            pipe.to("cuda" if torch.cuda.is_available() else "cpu")
-    elif hasattr(pipe, "to"):
-        pipe.to("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Set scheduler if specified in args
-    sched_name = (args.sampler or "").strip().lower()
-    if sched_name:
-        try:
-            from diffusers import EulerAncestralDiscreteScheduler, EulerDiscreteScheduler, DPMSolverMultistepScheduler, DDIMScheduler, UniPCMultistepScheduler
-        except Exception as e:
-            log(f"[ps1-engine] Scheduler import error: {e}")
-        else:
-            if sched_name == "ddim":
-                pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-            elif sched_name in ["dpmpp_2m_sde", "dpmpp_3m_sde"]:
-                # The scheduler's config is a FrozenDict and cannot be mutated in-place.
-                # Instead, create a new scheduler with the desired parameters.
-                solver_order = 2 if sched_name.startswith("dpmpp_2") else 3
-                pipe.scheduler = DPMSolverMultistepScheduler.from_config(
-                    pipe.scheduler.config,
-                    algorithm_type="sde-dpmsolver",
-                    solver_order=solver_order,
-                )
-            elif sched_name == "unipc":
-                pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
-            elif sched_name == "euler_a":
-                pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
-            elif sched_name == "euler":
-                pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config)
-            log(f"[ps1-engine] Scheduler set to {sched_name}")
-
-    # Ensure scheduler prediction_type is compatible with diffusers
-    try:
-        if getattr(pipe.scheduler.config, "prediction_type", "epsilon") not in ("epsilon", "v_prediction"):
-            pipe.scheduler = pipe.scheduler.__class__.from_config(
-                pipe.scheduler.config,
-                prediction_type="epsilon",
-            )
-            log("[ps1-engine] Scheduler prediction_type set to epsilon")
-    except Exception as e:
-        log(f"[ps1-engine] Could not adjust scheduler prediction_type: {e}")
-
-    # Apply LoRA weights if provided
-    loras = parse_loras(args.lora)
-    if loras:
-        try:
-            from safetensors.torch import load_file as safe_load
-            target = getattr(pipe, "unet", None) or getattr(pipe, "transformer", None)
-            if target is not None:
-                base_sd = {
-                    k: (v.float().clone() if getattr(v, "is_floating_point", lambda: False)() else v.clone())
-                    for k,v in target.state_dict().items()
-                }
-                matched = 0
-                for path, scale in loras:
-                    log(f"[ps1-engine] LoRA: {path} @ {scale}")
-                    if not path.exists():
-                        log(f"[ps1-engine]   missing: {path}")
-                        continue
-                    sd = safe_load(str(path)) if path.suffix.lower()==".safetensors" else torch.load(str(path), map_location="cpu")
-                    for base, upk, downk, alphak in group_lora_keys(sd):
-                        tk = base + "weight"
-                        if tk not in base_sd:
-                            if tk.endswith(".") and tk[:-1] in base_sd:
-                                tk = tk[:-1]  # adjust key if needed
-                            else:
-                                continue
-                        up = sd[upk].float(); down = sd[downk].float()
-                        r = down.shape[0]; 
-                        alpha = sd[alphak].item() if (alphak and alphak in sd) else r
-                        delta = (up @ down) * (alpha / r) * scale
-                        if hasattr(base_sd[tk], "shape") and base_sd[tk].shape != delta.shape:
-                            continue
-                        base_sd[tk].add_(delta); matched += 1
-                # Load merged weights back into the model (non-strict to allow partial matches)
-                dtype0 = next(target.parameters()).dtype
-                for k,v in base_sd.items():
-                    if getattr(v, "is_floating_point", lambda: False)():
-                        base_sd[k] = v.to(dtype0)
-                target.load_state_dict(base_sd, strict=False)
-                log(f"[ps1-engine] LoRA merged: {matched} groups")
-            else:
-                log("[ps1-engine] WARN: no applicable module to merge LoRAs into (unet/transformer not found)")
-        except Exception as e:
-            log(f"[ps1-engine] LoRA merge failed: {e}")
-
-    # Handle random seed
-    seed = random.randint(1, 2**31 - 1) if args.seed is None or args.seed < 0 else args.seed
-    generator = None
-    try:
-        generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
+        torch.set_float32_matmul_precision("high")
     except Exception:
         pass
-
-    # Snap width/height to multiples of 16 (required by model) and sanitize FPS
-    def _snap16(n: int) -> int:
-        return max(16, (int(n) // 16) * 16)
-    W = _snap16(args.width); H = _snap16(args.height)
-    if (W, H) != (args.width, args.height):
-        log(f"[ps1-engine] Adjusted resolution to {W}x{H} (16-px multiples) from {args.width}x{args.height}")
-    # FPS must be positive int
     try:
-        fps_i = int(args.fps)
-        if fps_i < 1: fps_i = 12
+        torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=True, enable_math=True)
     except Exception:
-        fps_i = 12
+        pass
+except Exception:
+    pass
+# --- end perf ---
 
-    # Common pipeline call parameters
-    common_kwargs = dict(
-        prompt=args.prompt or "",
-        negative_prompt=args.neg_prompt or "",
-        num_inference_steps=int(args.steps),
-        guidance_scale=float(args.cfg),
-        width=int(W),
-        height=int(H),
+def log(msg: str):
+    print(f"[ps1-engine] {msg}", flush=True)
+
+def detect_model_dir(root: str) -> Optional[str]:
+    cands = [
+        os.path.join(root, "models", "Wan2.2-TI2V-5B-Diffusers"),
+        os.path.join(root, "models", "Wan2.2-T2V-14B-Diffusers"),
+        os.path.join(root, "models", "Wan2.2-I2V-A14B-Diffusers"),
+    ]
+    for p in cands:
+        if os.path.isdir(p):
+            return p
+    p = os.environ.get("WAN22_MODEL_DIR")
+    return p if p and os.path.isdir(p) else None
+
+def build_pipe(model_dir: str, dtype_str: str = "bfloat16"):
+    import torch
+    from diffusers import WanPipeline, AutoModel
+    torch_dtype = getattr(torch, dtype_str, torch.bfloat16)
+    # Keep VAE numerics in float32 for stability
+    vae = AutoModel.from_pretrained(model_dir, subfolder="vae", torch_dtype=torch.float32)
+    pipe = WanPipeline.from_pretrained(model_dir, vae=vae, torch_dtype=torch_dtype)
+    return pipe
+
+def apply_wan_scheduler_fix(pipe, sampler: str, width: int, height: int):
+    """Flow-aware schedulers for WAN 2.2:
+       - euler/euler_a -> FlowMatchEulerDiscreteScheduler (stochastic for euler_a)
+       - default (unipc) -> UniPCMultistepScheduler with flow_prediction/use_flow_sigmas/flow_shift
+    """
+    try:
+        from diffusers import FlowMatchEulerDiscreteScheduler, UniPCMultistepScheduler
+    except Exception as e:
+        log(f"Scheduler imports failed: {e}"); return
+    flow_shift = 5.0 if max(width, height) >= 720 else 3.0
+    s = (sampler or "unipc").lower()
+    try:
+        if s in ("euler", "euler_a"):
+            try:
+                sched = FlowMatchEulerDiscreteScheduler.from_config(pipe.scheduler.config)
+            except Exception:
+                sched = FlowMatchEulerDiscreteScheduler()
+            # apply shift if supported
+            try:
+                sched.register_to_config(shift=flow_shift)
+            except Exception:
+                try: setattr(sched, "shift", flow_shift)
+                except Exception: pass
+            if s == "euler_a":
+                try:
+                    sched.register_to_config(stochastic_sampling=True)
+                except Exception:
+                    try: setattr(sched, "stochastic_sampling", True)
+                    except Exception: pass
+            pipe.scheduler = sched
+            log(f"Scheduler set to {s} (FlowMatchEuler, shift={flow_shift})")
+        else:
+            try:
+                sched = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
+            except Exception:
+                sched = UniPCMultistepScheduler()
+            for k, v in (("prediction_type","flow_prediction"),
+                         ("use_flow_sigmas", True),
+                         ("flow_shift", flow_shift)):
+                try:
+                    sched.register_to_config(**{k: v})
+                except Exception:
+                    try: setattr(sched, k, v)
+                    except Exception: pass
+            pipe.scheduler = sched
+            log(f"Scheduler set to unipc (flow_prediction, use_flow_sigmas=True, shift={flow_shift})")
+    except Exception as e:
+        log(f"Scheduler override skipped: {e}")
+
+def round_frames(n: int) -> int:
+    if n < 1: return 1
+    rem = (n - 1) % 4
+    if rem == 0: return n
+    down = n - rem
+    up = down + 4
+    return up if (n - down) >= (up - n) else down
+
+def normalize_resolution(model_dir: str, w: int, h: int):
+    """For TI2V-5B, map 1280x720 to 1280x704 (official run-size)."""
+    name = (model_dir or "").lower()
+    if "ti2v-5b" in name and w == 1280 and h == 720:
+        log("TI2V-5B: snapping 1280x720 to 1280x704 (official run-size).")
+        return 1280, 704
+    return w, h
+
+def save_video(frames, fps: int, outpath: str):
+    import numpy as np
+    from diffusers.utils import export_to_video
+    arr = np.asarray(frames)
+    if not np.isfinite(arr).all():
+        arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
+    export_to_video(arr, outpath, fps=fps)
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--mode", default="t2v", choices=["t2v","i2v","ti2v"])
+    p.add_argument("--prompt", default="");            p.add_argument("--neg_prompt", default="")
+    p.add_argument("--sampler", default="unipc");      p.add_argument("--steps", type=int, default=20)
+    p.add_argument("--cfg", type=float, default=7.0);  p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--fps", type=int, default=24);     p.add_argument("--frames", type=int, default=49)
+    p.add_argument("--width", type=int, default=1024); p.add_argument("--height", type=int, default=576)
+    p.add_argument("--batch_count", type=int, default=1); p.add_argument("--batch_size", type=int, default=1)
+    p.add_argument("--outdir", default="outputs");     p.add_argument("--model_dir", default="")
+    p.add_argument("--dtype", default="bfloat16")
+    args = p.parse_args()
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    model_dir = args.model_dir or detect_model_dir(root)
+    if not model_dir:
+        log("Model directory not found. Set --model_dir or WAN22_MODEL_DIR."); return 2
+
+    width, height = normalize_resolution(model_dir, int(args.width), int(args.height))
+
+    # Seed (optional)
+    try:
+        import torch
+        g = torch.Generator(device="cuda")
+        if args.seed: g.manual_seed(args.seed)
+    except Exception:
+        g = None
+
+    # Build pipeline
+    log(f"Loading model: {model_dir}")
+    pipe = build_pipe(model_dir, args.dtype)
+
+    # Move model weights to GPU
+    try:
+        pipe.to("cuda")
+    except Exception as e:
+        log(f"Failed to move pipe to CUDA: {e}"); return 3
+
+    # Free VRAM: keep VAE on CPU and enable slicing
+    try:
+        pipe.vae.to("cpu")
+        try: pipe.enable_vae_slicing()
+        except Exception: pass
+        try: pipe.enable_attention_slicing()
+        except Exception: pass
+        log("VAE moved to CPU (float32) with slicing; attention slicing enabled.")
+        # Optional: xFormers if present
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+            log("xFormers memory-efficient attention enabled.")
+        except Exception as _e:
+            log(f"xFormers not available or failed: {_e}")
+    except Exception as _e:
+        log(f"VAE/attention memory tweaks skipped: {_e}")
+
+    # Scheduler
+    apply_wan_scheduler_fix(pipe, args.sampler, width, height)
+
+    # Frames rule
+    steps  = int(args.steps)
+    frames = round_frames(int(args.frames))
+    if frames != args.frames:
+        log("`num_frames - 1` has to be divisible by 4. Rounding to the nearest number.")
+
+    # Progress callback
+    steps_total = max(1, steps)
+    def _cb(step, timestep, latents):
+        cur = int(step) + 1
+        pct = int(min(100, max(0, round(cur * 100 / steps_total))))
+        print(f"[PROGRESS] step={cur}/{steps_total} frame=1/{frames} percent={pct}", flush=True)
+
+    common = dict(
+        prompt=args.prompt, negative_prompt=args.neg_prompt or None,
+        width=width, height=height, num_inference_steps=steps,
+        guidance_scale=args.cfg, num_frames=frames, generator=g, output_type="np",
     )
 
-    # --- progress callback: emit per-step progress lines for console bars ---
-    steps_total = max(1, int(args.steps))
-    frames_total = max(1, int(args.frames))
-
-    def _progress_cb(*cb_args, **cb_kwargs):
-        # diffusers usually calls callback(step, timestep, latents)
+    # Call with/without callback depending on diffusers version
+    result, last_err = None, None
+    for with_cb in (True, False):
         try:
-            step = int(cb_args[0]) if cb_args else int(cb_kwargs.get("step", 0))
-        except Exception:
-            step = 0
-        cur = step + 1
-        pct = int(min(100, max(0, round(cur * 100 / steps_total))))
-        # We can't reliably know current frame; advertise in-flight.
-        print(
-            f"[PROGRESS] step={cur}/{steps_total} frame=1/{frames_total} percent={pct}",
-            flush=True,
-        )
-    if generator is not None:
-        common_kwargs["generator"] = generator
-    if args.mode in ("i2v", "ti2v") and args.init_image:
-        common_kwargs["image"] = args.init_image  # path to init image
-
-    # Try calling the pipeline with various parameter names (diffusers pipelines may use num_frames or video_length, etc.)
-    call_variants = [
-        {"num_frames": int(args.frames), "fps": fps_i},
-        {"video_length": int(args.frames), "fps": fps_i},
-        {"num_frames": int(args.frames)},
-        {"video_length": int(args.frames)},
-        {},
-    ]
-    result = None
-    last_err = None
-
-    # Try with callback first; if pipeline rejects it, retry without
-    for v in call_variants:
-        base_kwargs = {**common_kwargs, **v}
-        for with_cb in (True, False):
-            try:
-                kwargs = dict(base_kwargs)
-                if with_cb:
-                    kwargs["callback"] = _progress_cb
-                    kwargs["callback_steps"] = 1
-                log(
-                    f"[ps1-engine] Generating… steps={kwargs.get('num_inference_steps')} "
-                    f"frames={kwargs.get('num_frames') or kwargs.get('video_length')} "
-                    f"fps={kwargs.get('fps')}"
-                )
-                result = pipe(**kwargs)
-                raise StopIteration  # success
-            except TypeError as e:
-                last_err = e
-                if with_cb:
-                    continue  # retry without callback
-            except StopIteration:
-                break
-        if result is not None:
-            break
+            kwargs = dict(common)
+            if with_cb:
+                kwargs["callback"] = _cb; kwargs["callback_steps"] = 1
+            log(f"Generating… steps={steps} frames={frames} fps={args.fps}")
+            result = pipe(**kwargs); break
+        except TypeError as e:
+            last_err = e; continue
 
     if result is None:
-        log(f"[ps1-engine] Pipeline call failed: {last_err}")
-        return 4
+        log(f"Pipeline call failed: {last_err}"); return 4
 
-    # Prepare output directory and filename
-    outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    video_path = outdir / f"WAN22_{args.mode}_{timestamp}.mp4"
+    # Extract frames
+    frames_out = None
+    if isinstance(result, dict):
+        frames_out = result.get("frames") or result.get("images")
+    else:
+        frames_out = getattr(result, "frames", None) or getattr(result, "images", None)
+    if frames_out is None:
+        log("No frames returned from pipeline"); return 5
 
-    def save_from_frames(frame_list):
-        try:
-            import numpy as np, imageio
-            arr = [np.array(f) for f in frame_list]
-            imageio.mimwrite(str(video_path), arr, fps=max(1, int(args.fps)))
-            log(f"saved: {video_path}")
-            return True
-        except Exception as e:
-            log(f"[ps1-engine] frame save error: {e}")
-            return False
+    os.makedirs(args.outdir, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    base  = f"WAN22_{args.mode}_{stamp}"
+    json_path = os.path.join(args.outdir, base + ".json")
+    mp4_path  = os.path.join(args.outdir, base + ".mp4")
 
-    # Try saving the video from the result
-    saved = False
-    try:
-        # Some pipelines return an object with frames attribute
-        if hasattr(result, "frames"):
-            saved = save_from_frames(result.frames)
-        elif isinstance(result, dict) and "frames" in result:
-            saved = save_from_frames(result["frames"])
-    except Exception:
-        pass
+    meta = {
+        "mode": args.mode, "prompt": args.prompt, "neg_prompt": args.neg_prompt,
+        "sampler": args.sampler, "steps": steps, "cfg": args.cfg, "seed": args.seed,
+        "fps": args.fps, "frames": frames, "width": width, "height": height, "model_dir": model_dir,
+    }
+    with open(json_path, "w", encoding="utf-8") as f: json.dump(meta, f, indent=2)
+    log(f"wrote: {json_path}")
 
-    if not saved:
-        # Some diffusers pipelines return a tensor or list in 'videos'
-        try:
-            vid_tensor = None
-            if isinstance(result, dict):
-                vid_tensor = result.get("videos")
-            else:
-                vid_tensor = getattr(result, "videos", None)
-            if vid_tensor is not None:
-                import numpy as np, imageio
-                v = vid_tensor
-                # Handle batch dim and channel-last conversion:
-                if hasattr(v, "ndim") and v.ndim == 5:
-                    v = v[0]  
-                v = (v.permute(0,2,3,1).clamp(0,1).cpu().numpy() * 255).astype("uint8")
-                imageio.mimwrite(str(video_path), v, fps=max(1, int(args.fps)))
-                log(f"saved: {video_path}")
-                saved = True
-        except Exception as e:
-            log(f"[ps1-engine] tensor video save error: {e}")
-
-    if not saved:
-        # If no video could be saved, write a JSON sidecar as a fallback
-        sidecar = outdir / f"WAN22_{args.mode}_{timestamp}.json"
-        try:
-            with open(sidecar, "w", encoding="utf-8") as f:
-                json.dump({"status":"ok","note":"No video output detected"}, f)
-            log(f"wrote: {sidecar}")
-        except Exception:
-            pass
-
+    save_video(frames_out, args.fps, mp4_path)
+    log(f"wrote: {mp4_path}")
     return 0
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-
-

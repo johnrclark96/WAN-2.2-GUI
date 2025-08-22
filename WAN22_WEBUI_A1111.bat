@@ -1,5 +1,8 @@
 @echo off
 setlocal
+chcp 65001 >NUL
+@echo off
+setlocal
 
 set ROOT=D:\wan22
 set PY=%ROOT%\venv\Scripts\python.exe
@@ -19,3 +22,4 @@ powershell -NoProfile -Command ^
 
 echo [DONE] Exit code %ERRORLEVEL%
 pause
+
