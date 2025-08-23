@@ -94,7 +94,7 @@ def save_sidecar(path: Path, data: Dict) -> None:
 def load_pipeline(model_dir: str, dtype: str):
     if torch is None:
         raise RuntimeError("torch is required to load the model")
-    from diffusers import UniPCMultistepScheduler, WanPipeline
+    from diffusers import AutoencoderKLWan, UniPCMultistepScheduler, WanPipeline
 
     torch_dtype = {
         "bfloat16": torch.bfloat16,
@@ -102,8 +102,12 @@ def load_pipeline(model_dir: str, dtype: str):
         "float32": torch.float32,
     }[dtype]
 
-    pipe = WanPipeline.from_pretrained(model_dir, torch_dtype=torch_dtype)
-    pipe.vae.to(torch.float32)
+    vae = AutoencoderKLWan.from_pretrained(
+        model_dir, subfolder="vae", torch_dtype=torch.float32
+    )
+    pipe = WanPipeline.from_pretrained(
+        model_dir, vae=vae, torch_dtype=torch_dtype
+    )
     pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
     pipe.to("cuda")
     try:
@@ -137,6 +141,21 @@ def run_generation(pipe, params: argparse.Namespace, attn_name: str, attn_ctx):
     }
     if params.mode in {"i2v", "ti2v"} and params.image:
         kwargs["image"] = load_image(params.image, params.width, params.height)
+
+    allowed = {
+        "prompt",
+        "negative_prompt",
+        "height",
+        "width",
+        "num_frames",
+        "num_inference_steps",
+        "guidance_scale",
+        "num_videos_per_prompt",
+        "generator",
+        "output_type",
+        "image",
+    }
+    assert set(kwargs).issubset(allowed)
 
     outputs: List[str] = []
     base = str(int(time.time() * 1000))
