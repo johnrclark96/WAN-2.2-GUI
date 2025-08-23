@@ -22,6 +22,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Always echo the invocation so CI can assert on it
+Write-Host "[WAN shim] Launch: $PSCommandPath $args"
+
 $python = "D:\\wan22\\venv\\Scripts\\python.exe"
 $engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
@@ -48,10 +51,6 @@ if ($dtype)       { $argList += @("--dtype", $dtype) }
 if ($attn)        { $argList += @("--attn", $attn) }
 if ($image)       { $argList += @("--image", $image) }
 if ($dry_run)     { $argList += "--dry-run" }
-
-$cmd = @($python, $engine) + $argList
-$log = $cmd | ForEach-Object { if($_ -match '\s'){ '"'+$_+'"' } else { $_ } }
-Write-Host "[WAN shim] Launch: $($log -join ' ')"
 
 & $python $engine @argList
 exit $LASTEXITCODE
