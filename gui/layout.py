@@ -1,7 +1,17 @@
 #!/usr/bin/env python
 # layout.py – Gradio layout for WAN 2.2 UI
 
-import os, re, sys, json, time, shutil, random, subprocess, shlex, signal, atexit
+import atexit
+import json
+import os
+import random
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import List
 
@@ -50,7 +60,7 @@ def parse_weight_from_name(name: str, default=0.8) -> float:
             try:
                 w = float(m.group("w"))
                 return max(0.0, min(2.0, w))
-            except:
+            except Exception:
                 pass
     return default
 
@@ -273,7 +283,7 @@ def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=Tru
                 for f in outdir.rglob(f"*{ext}"):
                     try:
                         t = f.stat().st_mtime
-                    except:
+                    except Exception:
                         continue
                     if t >= start_time and t > latest_time:
                         newest, latest_time = f, t
@@ -402,7 +412,7 @@ def build_app():
                         with gr.Row():
                             seed = gr.Textbox(label="Seed (-1 = random)", value="-1")
                             dice = gr.Button("🎲", elem_classes=["smallbtn"])
-                            recycle = gr.Button("♻️", elem_classes=["smallbtn"])  # (Recycle button can reuse last seed if desired)
+                            _recycle = gr.Button("♻️", elem_classes=["smallbtn"])  # (Recycle button can reuse last seed if desired)
 
                         gr.Markdown("**LoRAs** (drop files or add paths below):")
                         t_files = gr.Files(label="LoRA files (.safetensors/.pt)", file_count="multiple", type="filepath")
@@ -537,8 +547,11 @@ def build_app():
                         console2 = gr.Textbox(label="Console Output", lines=20)
 
                 # Event handlers for img2vid tab
-                style_dd2.change(on_style2 := (lambda style, current_neg: STYLES.get(style, {}).get("neg", current_neg)), 
-                                 inputs=[style_dd2, neg2], outputs=[neg2])
+                style_dd2.change(
+                    lambda style, current_neg: STYLES.get(style, {}).get("neg", current_neg),
+                    inputs=[style_dd2, neg2],
+                    outputs=[neg2],
+                )
                 add_lora_btn2.click(lambda files, table: normalize_lora_table(table) + ingest_loras(files, DEFAULT_LORA_DIR),
                                     inputs=[i_files, i_loras], outputs=[i_loras])
                 dice2.click(make_seed, inputs=[], outputs=[seed2])
