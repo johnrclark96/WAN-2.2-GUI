@@ -7,3 +7,4 @@
 - Added defensive import check for `transformers`.
 - Pin dependencies: `diffusers==0.31.0`, `transformers==4.49.0`.
 - Documented that SDPA/flash-attn selection remains unchanged.
+- Cleaned up imports and exception handling in the UI and engine runner.

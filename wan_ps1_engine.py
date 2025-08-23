@@ -1,4 +1,11 @@
-import argparse, json, os, sys, time, gc, inspect, multiprocessing as mp
+import argparse
+import gc
+import inspect
+import json
+import multiprocessing as mp
+import os
+import sys
+import time
 
 from typing import Optional
 
@@ -252,9 +259,11 @@ def apply_wan_scheduler_fix(pipe, sampler: str, width: int, height: int):
         log("Scheduler set to unipc (flow_prediction, use_flow_sigmas=True, shift={flow_shift})".format(flow_shift=flow_shift))
 
 def round_frames(n: int) -> int:
-    if n < 1: return 1
+    if n < 1:
+        return 1
     rem = (n - 1) % 4
-    if rem == 0: return n
+    if rem == 0:
+        return n
     down = n - rem
     up = down + 4
     return up if (n - down) >= (up - n) else down
@@ -275,7 +284,8 @@ def normalize_resolution(pipe, w: int, h: int):
 def save_video(frames, fps: int, outpath: str):
     """Stream frames to an ffmpeg writer without manual cache clearing."""
     try:
-        import imageio_ffmpeg as ffmpeg, numpy as np
+        import imageio_ffmpeg as ffmpeg
+        import numpy as np
     except Exception as e:
         log(f"Video writer imports failed: {e}")
         raise
@@ -319,10 +329,14 @@ def _init_pipe(model_dir: Optional[str], dtype: str):
     if use_cuda:
         try:
             pipe.to("cuda")
-            try: pipe.unet.to(memory_format=torch.channels_last)
-            except Exception: pass
-            try: pipe.text_encoder.to(memory_format=torch.channels_last)
-            except Exception: pass
+            try:
+                pipe.unet.to(memory_format=torch.channels_last)
+            except Exception:
+                pass
+            try:
+                pipe.text_encoder.to(memory_format=torch.channels_last)
+            except Exception:
+                pass
             log("Moved pipeline to CUDA")
         except Exception as e:
             log(f"Failed to move pipe to CUDA: {e}")
@@ -342,7 +356,8 @@ def _init_pipe(model_dir: Optional[str], dtype: str):
 
     # Optional memory tweaks
     try:
-        pipe.enable_vae_slicing(); pipe.enable_vae_tiling()
+        pipe.enable_vae_slicing()
+        pipe.enable_vae_tiling()
     except Exception:
         pass
     try:
@@ -425,15 +440,17 @@ def _generate_with_pipe(pipe, params: dict):
         try:
             kwargs = dict(common)
             if with_cb:
-                kwargs["callback"] = _cb; kwargs["callback_steps"] = 1
+                kwargs["callback"] = _cb
+                kwargs["callback_steps"] = 1
             log(f"Generating… steps={steps} frames={frames} fps={fps}")
-            def _run_pipe():
+
+            def _run_pipe(inner_pipe=pipe):
                 if attn_ctx is not None:
                     with torch.inference_mode(), attn_ctx:
-                        return pipe(**kwargs)
-                else:
-                    with torch.inference_mode():
-                        return pipe(**kwargs)
+                        return inner_pipe(**kwargs)
+                with torch.inference_mode():
+                    return inner_pipe(**kwargs)
+
             try:
                 result = _run_pipe()
             except torch.cuda.OutOfMemoryError:
@@ -450,7 +467,8 @@ def _generate_with_pipe(pipe, params: dict):
                 result = _run_pipe()
             break
         except TypeError as e:
-            last_err = e; continue
+            last_err = e
+            continue
 
     if result is None:
         raise RuntimeError(f"Pipeline call failed: {last_err}")
@@ -564,14 +582,21 @@ def generate(**params):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", default="t2v", choices=["t2v","i2v","ti2v"])
-    p.add_argument("--prompt", default="");            p.add_argument("--neg_prompt", default="")
-    p.add_argument("--sampler", default="unipc");      p.add_argument("--steps", type=int, default=20)
-    p.add_argument("--cfg", type=float, default=7.0);  p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--fps", type=int, default=24);     p.add_argument("--frames", type=int, default=49)
-    p.add_argument("--width", type=int, default=1024); p.add_argument("--height", type=int, default=576)
-    p.add_argument("--batch_count", type=int, default=1); p.add_argument("--batch_size", type=int, default=1)
-    p.add_argument("--outdir", default="outputs");     p.add_argument("--model_dir", default="")
+    p.add_argument("--mode", default="t2v", choices=["t2v", "i2v", "ti2v"])
+    p.add_argument("--prompt", default="")
+    p.add_argument("--neg_prompt", default="")
+    p.add_argument("--sampler", default="unipc")
+    p.add_argument("--steps", type=int, default=20)
+    p.add_argument("--cfg", type=float, default=7.0)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--fps", type=int, default=24)
+    p.add_argument("--frames", type=int, default=49)
+    p.add_argument("--width", type=int, default=1024)
+    p.add_argument("--height", type=int, default=576)
+    p.add_argument("--batch_count", type=int, default=1)
+    p.add_argument("--batch_size", type=int, default=1)
+    p.add_argument("--outdir", default="outputs")
+    p.add_argument("--model_dir", default="")
     p.add_argument("--dtype", default="bfloat16")
     p.add_argument("--attn", default="auto", choices=["auto", "flash", "sdpa"])
     args = p.parse_args()
