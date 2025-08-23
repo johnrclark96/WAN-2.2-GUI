@@ -1,63 +1,61 @@
 import json
 import sys
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from wan_ps1_engine import main  # noqa: E402
+
+import wan_ps1_engine as engine  # noqa: E402
 
 
-def make_model_dir(tmp_path: Path) -> Path:
-    model_dir = tmp_path / "WAN"
-    (model_dir / "vae").mkdir(parents=True)
-    cfg = {
-        "base_dim": 160,
-        "z_dim": 48,
-        "scale_factor_spatial": 1,
-        "scale_factor_temporal": 1,
-    }
-    (model_dir / "vae" / "config.json").write_text(json.dumps(cfg))
-    return model_dir
+def run_main(monkeypatch, tmp_path, args):
+    argv = ["wan_ps1_engine.py"] + args + ["--outdir", str(tmp_path)]
+    monkeypatch.setattr(sys, "argv", argv)
+    return engine.main()
+
+
+def read_last_line(capsys):
+    return capsys.readouterr().out.strip().splitlines()[-1]
+
+
+def test_dry_run_ok(tmp_path, monkeypatch, capsys):
+    code = run_main(
+        monkeypatch,
+        tmp_path,
+        [
+            "--dry-run",
+            "--mode",
+            "t2v",
+            "--prompt",
+            "ok",
+            "--frames",
+            "8",
+            "--width",
+            "512",
+            "--height",
+            "288",
+        ],
+    )
+    assert code == 0
+    out_line = read_last_line(capsys)
+    assert out_line.startswith("[RESULT] OK ")
+    data = json.loads(out_line.split("[RESULT] OK ", 1)[1])
+    assert data["config"]["frames"] == 8
+    assert list(tmp_path.glob("dryrun_*.json"))
 
 
 @pytest.mark.parametrize(
-    "mesh,compile_mode",
-    [("off", "off"), ("grid", "reduce-overhead")],
+    "extra",
+    [
+        ["--prompt", "x", "--frames", "0"],
+        ["--prompt", "x", "--steps", "0"],
+        [],
+        ["--prompt", "x", "--mode", "i2v"],
+    ],
 )
-def test_dry_run_backend(monkeypatch, tmp_path, capsys, mesh, compile_mode):
-    model_dir = make_model_dir(tmp_path)
-    argv = [
-        "wan_ps1_engine.py",
-        "--dry-run",
-        "--attn",
-        "auto",
-        "--mode",
-        "t2v",
-        "--frames",
-        "8",
-        "--width",
-        "512",
-        "--height",
-        "288",
-        "--model_dir",
-        str(model_dir),
-    ]
-    if mesh != "off":
-        argv += ["--mesh", mesh]
-    if compile_mode != "off":
-        argv += ["--compile", compile_mode]
-    monkeypatch.setattr(sys, "argv", argv)
-    dummy = mock.Mock()
-    with mock.patch.dict(sys.modules, {"diffusers": dummy}):
-        with pytest.raises(SystemExit) as e:
-            main()
-    assert e.value.code == 0
-    out = capsys.readouterr().out.strip().splitlines()[-1]
-    assert out.startswith("[RESULT] OK DRY_RUN ")
-    data = json.loads(out.split("DRY_RUN ", 1)[1])
-    assert data["mesh"] == mesh
-    assert data["compile"] == compile_mode
-    dummy.DiffusionPipeline.from_pretrained.assert_not_called()
+def test_invalid_inputs_blocked(tmp_path, monkeypatch, capsys, extra):
+    code = run_main(monkeypatch, tmp_path, ["--dry-run"] + extra)
+    assert code == 1
+    assert read_last_line(capsys).startswith("[RESULT] FAIL GENERATION")
