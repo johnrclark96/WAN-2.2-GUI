@@ -78,11 +78,6 @@ except Exception:
     pass
 # --- end perf ---
 
-try:
-    from transformers import AutoModel, AutoTokenizer
-except Exception as e:
-    raise RuntimeError("Transformers AutoModel import failed; check versions") from e
-
 
 def _detect_flash_attn() -> bool:
     """Return True if flash_attn is available and GPU is supported."""
@@ -131,71 +126,68 @@ def detect_model_dir(root: str) -> Optional[str]:
     return env_p if env_p and os.path.isdir(env_p) else None
 
 
-def check_vae_config(cfg_path: str):
-    """Warn if required VAE config keys are missing."""
+def verify_vae_config(cfg_path: str) -> dict:
+    """Ensure the VAE config describes the expected WAN video VAE."""
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
     except FileNotFoundError:
-        return None
+        raise RuntimeError("Wrong VAE type (2D) — use WAN video VAE.")
     except Exception as e:
-        log(f"VAE config read failed: {e}")
-        return None
-    missing = [k for k in ("base_dim", "z_dim") if k not in cfg]
-    if missing:
-        log(f"VAE config missing keys: {', '.join(missing)}")
+        raise RuntimeError(f"VAE config read failed: {e}") from e
+
+    # Drop deprecated keys to avoid diffusers warnings.
+    if cfg.pop("clip_output", None) is not None:
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        log("Removed deprecated 'clip_output' from VAE config")
+
+    required = ["base_dim", "z_dim", "scale_factor_spatial", "scale_factor_temporal"]
+    if any(k not in cfg for k in required) or cfg.get("base_dim") != 160 or cfg.get("z_dim") != 48:
+        raise RuntimeError("Wrong VAE type (2D) — use WAN video VAE.")
+
+    log(
+        "Detected WAN video VAE config: "
+        f"base_dim={cfg['base_dim']}, z_dim={cfg['z_dim']}"
+    )
     return cfg
 
-def build_pipe(model_dir: str, dtype_str: str = "bfloat16"):
-    import torch
 
-    # WanPipeline used to be exported from diffusers but newer versions only
-    # expose it via trust_remote_code.  Try the explicit import first and fall
-    # back to DiffusionPipeline with remote code if it isn't available.
-    try:  # new diffusers versions (<0.30) drop WanPipeline from the top level
-        from diffusers import WanPipeline as _Pipe
-        pipe_kwargs = {}
-    except Exception:
-        from diffusers import DiffusionPipeline as _Pipe  # type: ignore
-        pipe_kwargs = {"trust_remote_code": True}
-        log("WanPipeline not found in diffusers; using DiffusionPipeline with trust_remote_code")
+def build_pipe(model_dir: str, dtype_str: str = "bfloat16", ignore_mismatch: bool = False):
+    import torch
+    from diffusers import DiffusionPipeline
 
     torch_dtype = getattr(torch, dtype_str, torch.bfloat16)
 
-    # The VAE's config may contain stale keys (e.g. clip_output) that newer
-    # diffusers versions warn about. Remove them before loading to keep the
-    # console clean and avoid confusing users. Also warn if required keys are
-    # missing.
     cfg_path = os.path.join(model_dir, "vae", "config.json")
-    try:
-        cfg = check_vae_config(cfg_path)
-        if cfg and cfg.pop("clip_output", None) is not None:
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-            log("Removed deprecated 'clip_output' from VAE config")
-    except Exception as e:
-        log(f"VAE config cleanup failed: {e}")
-
-    text_encoder = AutoModel.from_pretrained(model_dir, subfolder="text_encoder", torch_dtype=torch_dtype)
-    tokenizer = AutoTokenizer.from_pretrained(model_dir, subfolder="tokenizer")
+    cfg = verify_vae_config(cfg_path)
 
     try:
-        pipe = _Pipe.from_pretrained(
+        pipe = DiffusionPipeline.from_pretrained(
             model_dir,
-            text_encoder=text_encoder,
-            tokenizer=tokenizer,
             torch_dtype=torch_dtype,
-            **pipe_kwargs,
+            trust_remote_code=True,
+            ignore_mismatched_sizes=ignore_mismatch,
         )
     except Exception as e:
         log(f"Failed to load pipeline: {e}")
         raise
 
-    # Ensure the VAE runs in float32 for numerical stability.
+    # Ensure the VAE runs in float32 for numerical stability and confirm it's 3D.
     try:
         pipe.vae.to(dtype=torch.float32)
     except Exception:
         pass
+
+    latent_channels = getattr(pipe.vae.config, "latent_channels", "unknown")
+    weight = pipe.vae.encoder.conv_in.weight
+    rank = getattr(weight, "ndim", 0)
+    if rank != 5:
+        raise RuntimeError("Wrong VAE type (2D) — use WAN video VAE.")
+    log(
+        f"VAE {pipe.vae.__class__.__name__}: latent_channels={latent_channels}, "
+        f"base_dim={cfg['base_dim']}, z_dim={cfg['z_dim']}, conv_in_rank={rank}D"
+    )
 
     return pipe
 
@@ -314,7 +306,7 @@ def save_video(frames, fps: int, outpath: str):
     finally:
         writer.close()
 
-def _init_pipe(model_dir: Optional[str], dtype: str):
+def _init_pipe(model_dir: Optional[str], dtype: str, ignore_mismatch: bool = False):
     """Load and cache the diffusers pipeline."""
     global _PIPE
     if _PIPE is not None:
@@ -331,7 +323,7 @@ def _init_pipe(model_dir: Optional[str], dtype: str):
         raise RuntimeError("Model directory not found. Set --model_dir or WAN22_MODEL_DIR.")
 
     log(f"Loading model: {model_dir}")
-    pipe = build_pipe(model_dir, dtype)
+    pipe = build_pipe(model_dir, dtype, ignore_mismatch)
 
     use_cuda = torch.cuda.is_available()
     if use_cuda:
@@ -529,9 +521,9 @@ def _generate_with_pipe(pipe, params: dict):
 
     return {"json": json_path, "mp4": mp4_path}
 
-def _worker_loop(q, model_dir, dtype):
+def _worker_loop(q, model_dir, dtype, ignore_mismatch):
     try:
-        pipe = _init_pipe(model_dir, dtype)
+        pipe = _init_pipe(model_dir, dtype, ignore_mismatch)
     except Exception as e:
         log(f"Worker failed to initialize pipeline: {e}")
         return
@@ -546,13 +538,13 @@ def _worker_loop(q, model_dir, dtype):
         except Exception as e:
             rq.put({"error": str(e)})
 
-def init_worker(model_dir: Optional[str] = None, dtype: str = "bfloat16"):
+def init_worker(model_dir: Optional[str] = None, dtype: str = "bfloat16", ignore_mismatch: bool = False):
     """Start background worker that holds the pipeline in memory."""
     global _WORKER, _JOB_QUEUE
     if _WORKER is not None:
         return
     _JOB_QUEUE = mp.Queue()
-    _WORKER = mp.Process(target=_worker_loop, args=(_JOB_QUEUE, model_dir, dtype), daemon=True)
+    _WORKER = mp.Process(target=_worker_loop, args=(_JOB_QUEUE, model_dir, dtype, ignore_mismatch), daemon=True)
     _WORKER.start()
 
 def shutdown_worker():
@@ -567,7 +559,11 @@ def shutdown_worker():
 def generate(**params):
     """Public API to generate a video. Blocks until job completion."""
     if _JOB_QUEUE is None:
-        pipe = _init_pipe(params.get("model_dir"), params.get("dtype", "bfloat16"))
+        pipe = _init_pipe(
+            params.get("model_dir"),
+            params.get("dtype", "bfloat16"),
+            params.get("ignore_mismatch", False),
+        )
         return _generate_with_pipe(pipe, params)
 
     # On Windows, multiprocessing uses the 'spawn' start method which cannot
@@ -607,6 +603,7 @@ def main():
     p.add_argument("--model_dir", default="")
     p.add_argument("--dtype", default="bfloat16")
     p.add_argument("--attn", default="auto", choices=["auto", "flash", "sdpa"])
+    p.add_argument("--ignore-mismatch", action="store_true", dest="ignore_mismatch")
     p.add_argument("--dry-run", "--no-model", action="store_true", dest="dry_run")
     args = p.parse_args()
 
@@ -617,7 +614,10 @@ def main():
             model_dir = os.path.abspath(model_dir)
             log(f"Model dir: {model_dir}")
             cfg_path = os.path.join(model_dir, "vae", "config.json")
-            check_vae_config(cfg_path)
+            try:
+                verify_vae_config(cfg_path)
+            except Exception as e:
+                log(str(e))
         else:
             log("Model directory not found")
         backend, _ = _select_attn_ctx(args.attn)
@@ -627,7 +627,7 @@ def main():
 
     rc = 0
     try:
-        init_worker(args.model_dir, args.dtype)
+        init_worker(args.model_dir, args.dtype, args.ignore_mismatch)
         params = vars(args).copy()
         params.pop("dry_run", None)
         res = generate(**params)
