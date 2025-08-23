@@ -1,77 +1,58 @@
+param(
+    [string]$mode,
+    [string]$prompt,
+    [string]$neg_prompt,
+    [string]$sampler = "unipc",
+    [int]$steps = 20,
+    [double]$cfg = 7.0,
+    [long]$seed = -1,
+    [int]$fps = 24,
+    [int]$frames = 16,
+    [int]$width = 768,
+    [int]$height = 432,
+    [int]$batch_count = 1,
+    [int]$batch_size = 1,
+    [string]$outdir = "D:/wan22/outputs",
+    [string]$model_dir = "D:/wan22/models/Wan2.2-TI2V-5B-Diffusers",
+    [string]$dtype = "bfloat16",
+    [string]$attn = "auto",
+    [string]$image,
+    [switch]$dry_run
+)
 
-# Tune CUDA memory allocator to reduce VRAM thrashing.
-# Use a higher split size so large blocks can be reused and raise the
-# garbage collection threshold so the allocator holds onto memory a bit
-# longer instead of constantly releasing and re-requesting from the driver.
-$env:PYTORCH_CUDA_ALLOC_CONF = "max_split_size_mb:256,garbage_collection_threshold:0.9"
-
-# NOTE:
-# "expandable_segments" is omitted because some PyTorch builds throw
-# a parsing error when this flag is present. The remaining settings keep
-# the memory allocator tuning without tripping those older releases.
-# wan_runner.ps1 — progress-aware runner that shows a console progress bar
 $ErrorActionPreference = "Stop"
-$ProgressPreference = "Continue"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$root   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$python = Join-Path $root "venv\Scripts\python.exe"
-$engine = Join-Path $root "wan_ps1_engine.py"
+$python = "D:\\wan22\\venv\\Scripts\\python.exe"
+$engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
-if (-not (Test-Path $python)) { Write-Error "Python not found: $python" }
-if (-not (Test-Path $engine)) { Write-Error "Engine not found: $engine" }
-
-# Build argument line (quote each arg)
-$argv = @()
-foreach ($a in $args) {
-  if ($a -match '\s' -or $a -match '["'']') { $argv += ('"'+$a.replace('"','`"')+'"') }
-  else { $argv += $a }
+if (-not (Test-Path $python)) {
+  Write-Host "[WAN shim] Launch: python not found at $python"
+  Write-Error "WAN venv python not found at $python"
+  exit 1
 }
-$argline = ('"'+$engine+'" ' + ($argv -join ' '))
+if (-not (Test-Path $engine)) { throw "Engine not found: $engine" }
 
-# Start python with redirected IO so we can parse progress lines
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = $python
-$psi.Arguments = $argline
-$psi.UseShellExecute = $false
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError  = $true
-$psi.CreateNoWindow = $true
+$argv = @($engine)
+if ($mode)        { $argv += @("--mode", $mode) }
+if ($prompt)      { $argv += @("--prompt", $prompt) }
+if ($neg_prompt)  { $argv += @("--neg_prompt", $neg_prompt) }
+if ($sampler)     { $argv += @("--sampler", $sampler) }
+if ($steps)       { $argv += @("--steps", $steps) }
+if ($cfg)         { $argv += @("--cfg", $cfg) }
+if ($seed -ge 0)  { $argv += @("--seed", $seed) }
+if ($fps)         { $argv += @("--fps", $fps) }
+if ($frames)      { $argv += @("--frames", $frames) }
+if ($width)       { $argv += @("--width", $width) }
+if ($height)      { $argv += @("--height", $height) }
+if ($batch_count) { $argv += @("--batch_count", $batch_count) }
+if ($batch_size)  { $argv += @("--batch_size", $batch_size) }
+if ($outdir)      { $argv += @("--outdir", $outdir) }
+if ($model_dir)   { $argv += @("--model_dir", $model_dir) }
+if ($dtype)       { $argv += @("--dtype", $dtype) }
+if ($attn)        { $argv += @("--attn", $attn) }
+if ($image)       { $argv += @("--image", $image) }
+if ($dry_run)     { $argv += "--dry-run" }
 
-$proc = [System.Diagnostics.Process]::Start($psi)
-
-# Read output line-by-line and update progress
-$activity = "WAN 2.2 generation"
-$lastPercent = -1
-while (-not $proc.HasExited) {
-  $line = $proc.StandardOutput.ReadLine()
-  if ($null -ne $line) {
-    Write-Host $line
-    if ($line -match '^\[PROGRESS\]\s+step=(\d+)/(\d+)\s+frame=(\d+)/(\d+)\s+percent=(\d+)') {
-      $step = [int]$matches[1]; $steps=[int]$matches[2]
-      $frame=[int]$matches[3];  $frames=[int]$matches[4]
-      $pct  = [int]$matches[5]
-      if ($pct -ne $lastPercent) {
-        $status = "Frame $frame/$frames · Step $step/$steps"
-        Write-Progress -Id 1 -Activity $activity -Status $status -PercentComplete $pct
-        $lastPercent = $pct
-      }
-    }
-  } else {
-    Start-Sleep -Milliseconds 50
-  }
-}
-
-# Drain remaining output
-while (-not $proc.StandardOutput.EndOfStream) {
-  $line = $proc.StandardOutput.ReadLine()
-  if ($line) { Write-Host $line }
-}
-while (-not $proc.StandardError.EndOfStream) {
-  $line = $proc.StandardError.ReadLine()
-  if ($line) { Write-Warning $line }
-}
-
-Write-Progress -Id 1 -Activity $activity -Completed
-exit $proc.ExitCode
-
+Write-Host "[WAN shim] Launch: $python $($argv -join ' ')"
+& $python @argv
+exit $LASTEXITCODE
