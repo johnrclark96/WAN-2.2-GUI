@@ -1,0 +1,6 @@
+{
+  "base_dim": 160,
+  "z_dim": 48,
+  "scale_factor_spatial": 1,
+  "scale_factor_temporal": 1
+}

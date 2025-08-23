@@ -6,8 +6,19 @@ import multiprocessing as mp
 import os
 import sys
 import time
+import traceback
 
 from typing import Optional
+
+
+def OK(tag: str, **m):
+    print("[RESULT] OK", tag, json.dumps(m, default=str))
+    sys.exit(0)
+
+
+def FAIL(tag: str, **m):
+    print("[RESULT] FAIL", tag, json.dumps(m, default=str))
+    sys.exit(1)
 
 # ---- SDPA helper to ignore unsupported kwargs (e.g. enable_gqa) ----
 def _patch_sdpa_for_gqa():
@@ -124,6 +135,33 @@ def detect_model_dir(root: str) -> Optional[str]:
             return p
     env_p = os.environ.get("WAN22_MODEL_DIR")
     return env_p if env_p and os.path.isdir(env_p) else None
+
+
+def validate_params(params: dict):
+    """Validate key generation parameters."""
+    errors = []
+    if not isinstance(params.get("prompt", ""), str):
+        errors.append(f"prompt invalid: {params.get('prompt')}")
+    if not isinstance(params.get("neg_prompt", ""), str):
+        errors.append(f"neg_prompt invalid: {params.get('neg_prompt')}")
+    if int(params.get("steps", 0)) <= 0:
+        errors.append(f"steps must be >0 (got {params.get('steps')})")
+    if float(params.get("cfg", 0)) <= 0:
+        errors.append(f"cfg must be >0 (got {params.get('cfg')})")
+    for k in ("width", "height"):
+        v = int(params.get(k, 0))
+        if v <= 0 or v % 8 != 0:
+            errors.append(f"{k} must be positive multiple of 8 (got {v})")
+    if int(params.get("frames", 0)) <= 0:
+        errors.append(f"frames must be >0 (got {params.get('frames')})")
+    if int(params.get("fps", 0)) <= 0:
+        errors.append(f"fps must be >0 (got {params.get('fps')})")
+    sampler = str(params.get("sampler", "")).lower()
+    allowed = {"unipc", "euler", "euler_a", "dpm"}
+    if sampler not in allowed:
+        errors.append(f"sampler must be one of {sorted(allowed)} (got {sampler})")
+    if errors:
+        raise ValueError("; ".join(errors))
 
 
 def verify_vae_config(cfg_path: str) -> dict:
@@ -306,7 +344,12 @@ def save_video(frames, fps: int, outpath: str):
     finally:
         writer.close()
 
-def _init_pipe(model_dir: Optional[str], dtype: str, ignore_mismatch: bool = False):
+def _init_pipe(
+    model_dir: Optional[str],
+    dtype: str,
+    ignore_mismatch: bool = False,
+    compile_unet: bool = False,
+):
     """Load and cache the diffusers pipeline."""
     global _PIPE
     if _PIPE is not None:
@@ -322,8 +365,25 @@ def _init_pipe(model_dir: Optional[str], dtype: str, ignore_mismatch: bool = Fal
     if not model_dir:
         raise RuntimeError("Model directory not found. Set --model_dir or WAN22_MODEL_DIR.")
 
+    use_cuda = torch.cuda.is_available()
+    if use_cuda:
+        try:
+            free0, total0 = torch.cuda.mem_get_info()
+            log(
+                f"VRAM before load: {free0 // (1024**2)} MiB free / {total0 // (1024**2)} MiB total"
+            )
+        except Exception:
+            pass
+
     log(f"Loading model: {model_dir}")
     pipe = build_pipe(model_dir, dtype, ignore_mismatch)
+
+    if compile_unet:
+        try:
+            pipe.unet = torch.compile(pipe.unet, mode="reduce-overhead")
+            log("Compiled UNet with torch.compile")
+        except Exception as e:
+            log(f"torch.compile failed: {e}")
 
     use_cuda = torch.cuda.is_available()
     if use_cuda:
@@ -338,6 +398,7 @@ def _init_pipe(model_dir: Optional[str], dtype: str, ignore_mismatch: bool = Fal
             except Exception:
                 pass
             log("Moved pipeline to CUDA")
+            log(f"Device: cuda, dtype: {pipe.unet.dtype}")
         except Exception as e:
             log(f"Failed to move pipe to CUDA: {e}")
             try:
@@ -346,6 +407,13 @@ def _init_pipe(model_dir: Optional[str], dtype: str, ignore_mismatch: bool = Fal
             except Exception as e2:
                 log(f"CPU offload failed: {e2}")
                 raise
+        try:
+            free1, total1 = torch.cuda.mem_get_info()
+            log(
+                f"VRAM after load: {free1 // (1024**2)} MiB free / {total1 // (1024**2)} MiB total"
+            )
+        except Exception:
+            pass
     else:
         try:
             pipe.enable_model_cpu_offload()
@@ -353,6 +421,7 @@ def _init_pipe(model_dir: Optional[str], dtype: str, ignore_mismatch: bool = Fal
         except Exception as e2:
             log(f"CPU offload failed: {e2}")
             raise
+        log(f"Device: cpu, dtype: {pipe.unet.dtype}")
 
     # Optional memory tweaks
     try:
@@ -371,6 +440,8 @@ def _init_pipe(model_dir: Optional[str], dtype: str, ignore_mismatch: bool = Fal
 def _generate_with_pipe(pipe, params: dict):
     """Generate video using an existing pipeline instance."""
     import torch
+
+    validate_params(params)
 
     mode = params.get("mode", "t2v")
     prompt = params.get("prompt", "")
@@ -454,7 +525,15 @@ def _generate_with_pipe(pipe, params: dict):
             try:
                 result = _run_pipe()
             except torch.cuda.OutOfMemoryError:
-                log("CUDA out of memory. Falling back to sequential CPU offload and retrying.")
+                try:
+                    free, total = torch.cuda.mem_get_info()
+                    log(
+                        "CUDA OOM: free={free} total={total}. Suggest smaller width/height/frames".format(
+                            free=free // (1024**2), total=total // (1024**2)
+                        )
+                    )
+                except Exception:
+                    log("CUDA out of memory. Falling back to sequential CPU offload and retrying.")
                 try:
                     pipe.enable_sequential_cpu_offload()
                 except Exception as e2:
@@ -521,9 +600,10 @@ def _generate_with_pipe(pipe, params: dict):
 
     return {"json": json_path, "mp4": mp4_path}
 
-def _worker_loop(q, model_dir, dtype, ignore_mismatch):
+
+def _worker_loop(q, model_dir, dtype, ignore_mismatch, compile_unet):
     try:
-        pipe = _init_pipe(model_dir, dtype, ignore_mismatch)
+        pipe = _init_pipe(model_dir, dtype, ignore_mismatch, compile_unet)
     except Exception as e:
         log(f"Worker failed to initialize pipeline: {e}")
         return
@@ -538,13 +618,22 @@ def _worker_loop(q, model_dir, dtype, ignore_mismatch):
         except Exception as e:
             rq.put({"error": str(e)})
 
-def init_worker(model_dir: Optional[str] = None, dtype: str = "bfloat16", ignore_mismatch: bool = False):
+def init_worker(
+    model_dir: Optional[str] = None,
+    dtype: str = "bfloat16",
+    ignore_mismatch: bool = False,
+    compile_unet: bool = False,
+):
     """Start background worker that holds the pipeline in memory."""
     global _WORKER, _JOB_QUEUE
     if _WORKER is not None:
         return
     _JOB_QUEUE = mp.Queue()
-    _WORKER = mp.Process(target=_worker_loop, args=(_JOB_QUEUE, model_dir, dtype, ignore_mismatch), daemon=True)
+    _WORKER = mp.Process(
+        target=_worker_loop,
+        args=(_JOB_QUEUE, model_dir, dtype, ignore_mismatch, compile_unet),
+        daemon=True,
+    )
     _WORKER.start()
 
 def shutdown_worker():
@@ -563,6 +652,7 @@ def generate(**params):
             params.get("model_dir"),
             params.get("dtype", "bfloat16"),
             params.get("ignore_mismatch", False),
+            params.get("compile", False),
         )
         return _generate_with_pipe(pipe, params)
 
@@ -605,42 +695,50 @@ def main():
     p.add_argument("--attn", default="auto", choices=["auto", "flash", "sdpa"])
     p.add_argument("--ignore-mismatch", action="store_true", dest="ignore_mismatch")
     p.add_argument("--dry-run", "--no-model", action="store_true", dest="dry_run")
+    p.add_argument("--compile", action="store_true", dest="compile")
+    p.add_argument("--print-config", action="store_true", dest="print_config")
     args = p.parse_args()
 
+    params = vars(args).copy()
+    try:
+        validate_params(params)
+    except Exception as e:
+        FAIL("ARGS", error=str(e), params=params)
+
+    if args.print_config:
+        print(json.dumps(params, indent=2))
+        OK("PRINT_CONFIG")
+
     if args.dry_run:
-        root = os.path.dirname(os.path.abspath(__file__))
-        model_dir = args.model_dir or detect_model_dir(root)
-        if model_dir:
+        try:
+            root = os.path.dirname(os.path.abspath(__file__))
+            model_dir = args.model_dir or detect_model_dir(root)
+            if not model_dir:
+                FAIL("DRY_RUN", error="Model directory not found", params=params)
             model_dir = os.path.abspath(model_dir)
             log(f"Model dir: {model_dir}")
             cfg_path = os.path.join(model_dir, "vae", "config.json")
-            try:
-                verify_vae_config(cfg_path)
-            except Exception as e:
-                log(str(e))
-        else:
-            log("Model directory not found")
-        backend, _ = _select_attn_ctx(args.attn)
-        log(f"Attention backend: {backend}")
-        print("[RESULT] OK")
-        return 0
+            verify_vae_config(cfg_path)
+            subfolders = ["vae", "unet", "text_encoder", "scheduler"]
+            for sf in subfolders:
+                log(f"Subfolder: {sf} -> {os.path.join(model_dir, sf)}")
+            backend, _ = _select_attn_ctx(args.attn)
+            log(f"Attention backend: {backend}")
+            OK("DRY_RUN", backend=backend, model_dir=model_dir, subfolders=subfolders)
+        except Exception as e:
+            FAIL("DRY_RUN", error=str(e), tb=traceback.format_exc(), params=params)
 
-    rc = 0
     try:
-        init_worker(args.model_dir, args.dtype, args.ignore_mismatch)
-        params = vars(args).copy()
+        init_worker(args.model_dir, args.dtype, args.ignore_mismatch, args.compile)
         params.pop("dry_run", None)
         res = generate(**params)
         log(f"Generation completed: {res}")
-        print("[RESULT] OK")
+        OK("GENERATION", result=res)
     except Exception as e:
-        import traceback
-        print(f"[RESULT] FAIL {e}")
-        traceback.print_exc()
-        rc = 1
+        FAIL("GENERATION", error=str(e), tb=traceback.format_exc(), config=params)
     finally:
         shutdown_worker()
-    return rc
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())
