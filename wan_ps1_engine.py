@@ -106,7 +106,10 @@ def load_pipeline(model_dir: str, dtype: str):
     pipe.vae.to(torch.float32)
     pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
     pipe.to("cuda")
-    pipe.enable_model_cpu_offload()
+    try:
+        pipe.enable_model_cpu_offload()
+    except Exception as e:  # pragma: no cover - accelerate may be absent
+        print(f"[WARN] CPU offload unavailable: {e}")
     pipe.transformer.to("cuda")
     return pipe
 
@@ -138,8 +141,13 @@ def run_generation(pipe, params: argparse.Namespace, attn_name: str, attn_ctx):
     outputs: List[str] = []
     base = str(int(time.time() * 1000))
     for bc in range(params.batch_count):
+        start = time.time()
         with attn_ctx:
             result = pipe(**kwargs)
+        elapsed = time.time() - start
+        print(
+            f"[INFO] Batch {bc}: {elapsed:.2f}s total, {elapsed / params.steps:.3f}s/step"
+        )
         vids = getattr(result, "frames", getattr(result, "images", []))
         for bi, arr in enumerate(vids):
             if params.frames == 1:
@@ -208,8 +216,16 @@ def main() -> int:
     try:
         validate(args)
     except Exception as e:
-        err = {"error": f"{type(e).__name__}: {e}", "config": cfg}
-        print("[RESULT] FAIL ARGS", json.dumps(err))
+        outdir = Path(args.outdir or ".")
+        outdir.mkdir(parents=True, exist_ok=True)
+        sidecar = outdir / f"error_{int(time.time()*1000)}.json"
+        err = {
+            "error": f"{type(e).__name__}: {e}",
+            "tb": traceback.format_exc(),
+            "config": cfg,
+        }
+        save_sidecar(sidecar, err)
+        print("[RESULT] FAIL GENERATION", json.dumps(err))
         return 1
 
     if args.dry_run:

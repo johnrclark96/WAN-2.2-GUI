@@ -51,6 +51,9 @@ def run_cmd(**kw):
     if mode in {"i2v", "ti2v"} and not image:
         raise gr.Error("image required for image modes")
 
+    if not Path(kw["model_dir"]).exists():
+        raise gr.Error(f"model dir not found: {kw['model_dir']}")
+
     args = {
         "mode": mode,
         "prompt": prompt,
@@ -99,6 +102,11 @@ def build_ui():
             frames = gr.Slider(1, 200, value=16, step=1, label="Frames")
             width = gr.Number(value=768, label="Width")
             height = gr.Number(value=432, label="Height")
+            res_preset = gr.Dropdown(
+                ["(none)", "896x512", "960x544"],
+                value="(none)",
+                label="Resolution Preset (16GB friendly)",
+            )
             batch_count = gr.Number(value=1, label="Batch Count")
             batch_size = gr.Number(value=1, label="Batch Size")
             model_dir = gr.Textbox(value=DEFAULT_MODEL_DIR, label="Model Dir")
@@ -107,6 +115,14 @@ def build_ui():
             attn = gr.Dropdown(["auto", "flash", "sdpa", "math"], value="auto", label="Attention")
             run = gr.Button("Generate")
             log = gr.Textbox(label="Log", lines=20)
+
+        res_preset.change(
+            lambda p: (
+                (896, 512) if p == "896x512" else (960, 544) if p == "960x544" else (gr.update(), gr.update())
+            ),
+            inputs=res_preset,
+            outputs=[width, height],
+        )
 
         run.click(
             run_cmd,
