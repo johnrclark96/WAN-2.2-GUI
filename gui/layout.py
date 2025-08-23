@@ -147,22 +147,7 @@ def build_cmd(
         cmd += ["--batch_size", str(int(batch_size))]
     if outdir:
         cmd += ["--outdir", outdir]
-    if mode in ("i2v", "ti2v") and init_img:
-        cmd += ["--init_image", init_img]
-
-    # Attach LoRA arguments
-    rows = normalize_lora_table(lora_rows)
-    for row in rows:
-        path = str(row[0]).strip() if row and row[0] else ""
-        if not path:
-            continue
-        try:
-            w = float(row[1]) if len(row) > 1 else 0.8
-        except:
-            w = 0.8
-        cmd += ["--lora", f"{path}:{w}"]
-
-    # Extra arguments (including --base if added)
+    # Extra arguments (including --model_dir if added)
     if extra:
         try:
             cmd += shlex.split(extra)
@@ -458,7 +443,7 @@ def build_app():
                     base_path = model_choice
                     if base_path and str(base_path).strip().lower() != "auto":
                         extra_flags = (extra_flags or "").strip()
-                        extra_flags = f"--base \"{str(base_path).strip()}\" " + extra_flags
+                        extra_flags = f"--model_dir \"{str(base_path).strip()}\" " + extra_flags
 
                     # Build command list and run
                     cmd = build_cmd(
@@ -566,7 +551,7 @@ def build_app():
                     base_path = model_choice2
                     if base_path and str(base_path).strip().lower() != "auto":
                         extra_flags = (extra_flags or "").strip()
-                        extra_flags = f"--base \"{str(base_path).strip()}\" " + extra_flags
+                        extra_flags = f"--model_dir \"{str(base_path).strip()}\" " + extra_flags
 
                     cmd = build_cmd(
                         runner=runner_p, mode=mode, prompt=p or "", neg=n, init_img=init,
