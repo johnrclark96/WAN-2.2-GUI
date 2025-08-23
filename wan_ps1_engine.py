@@ -49,13 +49,12 @@ def _patch_sdpa_for_gqa():
 
 _patch_sdpa_for_gqa()
 
-# --- perf: tf32 + sdpa kernels ---
+# --- perf: tf32 kernels ---
 # global pipeline/worker state
 _PIPE = None
 _JOB_QUEUE = None
 _WORKER = None
 
-_sdpa_ctx = None
 try:
     import torch
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -68,14 +67,41 @@ try:
         torch.set_float32_matmul_precision("high")
     except Exception:
         pass
-    try:
-        from torch.nn.attention import sdpa_kernel
-        _sdpa_ctx = sdpa_kernel(enable_flash=False, enable_mem_efficient=True, enable_math=True)
-    except Exception:
-        _sdpa_ctx = None
 except Exception:
-    _sdpa_ctx = None
+    pass
 # --- end perf ---
+
+
+def _detect_flash_attn() -> bool:
+    """Return True if flash_attn is available and GPU is supported."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return False
+        import flash_attn  # noqa: F401
+        major, _ = torch.cuda.get_device_capability()
+        return major >= 8
+    except Exception:
+        return False
+
+
+def _select_attn_ctx(pref: str):
+    """Select attention backend and return (name, context)."""
+    try:
+        from torch.backends.cuda import sdp_kernel
+    except Exception:
+        return "sdpa", None
+
+    use_flash = pref == "flash" or (pref == "auto" and _detect_flash_attn())
+    if use_flash:
+        try:
+            return "flash", sdp_kernel(enable_flash=True, enable_mem_efficient=False, enable_math=False)
+        except Exception:
+            pass
+    try:
+        return "sdpa", sdp_kernel(enable_flash=False, enable_mem_efficient=True, enable_math=True)
+    except Exception:
+        return "sdpa", None
 
 def log(msg: str):
     print(f"[ps1-engine] {msg}", flush=True)
@@ -246,11 +272,6 @@ def _init_pipe(model_dir: Optional[str], dtype: str):
             except Exception: pass
             try: pipe.text_encoder.to(memory_format=torch.channels_last)
             except Exception: pass
-            try:
-                pipe.enable_xformers_memory_efficient_attention()
-                log("Xformers memory-efficient attention enabled")
-            except Exception:
-                pass
             log("Moved pipeline to CUDA")
         except Exception as e:
             log(f"Failed to move pipe to CUDA: {e}")
@@ -342,6 +363,11 @@ def _generate_with_pipe(pipe, params: dict):
         width=width, height=height, num_inference_steps=steps,
         guidance_scale=cfg, num_frames=frames, generator=g, output_type="np",
     )
+    attn_pref = (params.get("attn", "auto") or "auto").lower()
+    backend, attn_ctx = _select_attn_ctx(attn_pref)
+    if attn_pref == "flash" and backend != "flash":
+        log("flash_attn requested but unavailable; using SDPA")
+    log(f"Attention backend: {backend}")
 
     result, last_err = None, None
     for with_cb in (True, False):
@@ -351,8 +377,8 @@ def _generate_with_pipe(pipe, params: dict):
                 kwargs["callback"] = _cb; kwargs["callback_steps"] = 1
             log(f"Generating… steps={steps} frames={frames} fps={fps}")
             def _run_pipe():
-                if _sdpa_ctx is not None:
-                    with torch.inference_mode(), _sdpa_ctx:
+                if attn_ctx is not None:
+                    with torch.inference_mode(), attn_ctx:
                         return pipe(**kwargs)
                 else:
                     with torch.inference_mode():
@@ -478,6 +504,7 @@ def main():
     p.add_argument("--batch_count", type=int, default=1); p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--outdir", default="outputs");     p.add_argument("--model_dir", default="")
     p.add_argument("--dtype", default="bfloat16")
+    p.add_argument("--attn", default="auto", choices=["auto", "flash", "sdpa"])
     args = p.parse_args()
 
     init_worker(args.model_dir, args.dtype)
