@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import traceback
+from contextlib import nullcontext
 
 from typing import Optional
 
@@ -108,18 +109,18 @@ def _select_attn_ctx(pref: str):
     try:
         from torch.backends.cuda import sdp_kernel
     except Exception:
-        return "sdpa", None
+        return "sdpa", nullcontext()
 
     use_flash = pref == "flash" or (pref == "auto" and _detect_flash_attn())
-    if use_flash:
-        try:
-            return "flash", sdp_kernel(enable_flash=True, enable_mem_efficient=False, enable_math=False)
-        except Exception:
-            pass
     try:
-        return "sdpa", sdp_kernel(enable_flash=False, enable_mem_efficient=True, enable_math=True)
+        ctx = sdp_kernel(
+            enable_flash=use_flash,
+            enable_mem_efficient=True,
+            enable_math=True,
+        )
+        return ("flash" if use_flash else "sdpa"), ctx
     except Exception:
-        return "sdpa", None
+        return "sdpa", nullcontext()
 
 def log(msg: str):
     print(f"[ps1-engine] {msg}", flush=True)
@@ -378,6 +379,12 @@ def _init_pipe(
     log(f"Loading model: {model_dir}")
     pipe = build_pipe(model_dir, dtype, ignore_mismatch)
 
+    try:
+        from diffusers.models.attention_processor import AttnProcessor2_0
+        pipe.unet.set_attn_processor(AttnProcessor2_0())
+    except Exception:
+        pass
+
     if compile_mode != "off":
         try:
             pipe.unet = torch.compile(pipe.unet, mode=compile_mode)
@@ -520,10 +527,7 @@ def _generate_with_pipe(pipe, params: dict):
             log(f"Generating… steps={steps} frames={frames} fps={fps}")
 
             def _run_pipe(inner_pipe=pipe):
-                if attn_ctx is not None:
-                    with torch.inference_mode(), attn_ctx:
-                        return inner_pipe(**kwargs)
-                with torch.inference_mode():
+                with torch.inference_mode(), attn_ctx:
                     return inner_pipe(**kwargs)
 
             try:
