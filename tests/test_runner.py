@@ -2,14 +2,15 @@ import sys
 import shutil
 import subprocess
 import pytest
+import pathlib
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell runner is Windows-only")
 def test_runner_path():
-    if sys.platform != "win32":
-        pytest.skip("PowerShell runner only works on Windows")
     exe = shutil.which("pwsh") or shutil.which("powershell")
-    if exe is None:
+    if not exe:
         pytest.skip("No PowerShell available")
+
     cmd = [
         exe,
         "-NoLogo",
@@ -21,6 +22,14 @@ def test_runner_path():
         "-prompt",
         "ok",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(pathlib.Path.cwd()),
+    )
+    print("STDOUT:\n", result.stdout)
+    print("STDERR:\n", result.stderr)
     assert "[WAN shim] Launch:" in result.stdout
 

@@ -22,35 +22,37 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Always echo the invocation so CI can assert on it
-Write-Host "[WAN shim] Launch: $PSCommandPath $args"
-
 $python = "D:\\wan22\\venv\\Scripts\\python.exe"
 $engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
-if (-not (Test-Path $python)) { throw "Python not found: $python" }
+if (-not (Test-Path $python)) {
+  Write-Host "[WAN shim] Launch: python not found at $python"
+  Write-Error "WAN venv python not found at $python"
+  exit 1
+}
 if (-not (Test-Path $engine)) { throw "Engine not found: $engine" }
 
-$argList = @()
-if ($mode)        { $argList += @("--mode", $mode) }
-if ($prompt)      { $argList += @("--prompt", $prompt) }
-if ($neg_prompt)  { $argList += @("--neg_prompt", $neg_prompt) }
-if ($sampler)     { $argList += @("--sampler", $sampler) }
-if ($steps)       { $argList += @("--steps", $steps) }
-if ($cfg)         { $argList += @("--cfg", $cfg) }
-if ($seed -ge 0)  { $argList += @("--seed", $seed) }
-if ($fps)         { $argList += @("--fps", $fps) }
-if ($frames)      { $argList += @("--frames", $frames) }
-if ($width)       { $argList += @("--width", $width) }
-if ($height)      { $argList += @("--height", $height) }
-if ($batch_count) { $argList += @("--batch_count", $batch_count) }
-if ($batch_size)  { $argList += @("--batch_size", $batch_size) }
-if ($outdir)      { $argList += @("--outdir", $outdir) }
-if ($model_dir)   { $argList += @("--model_dir", $model_dir) }
-if ($dtype)       { $argList += @("--dtype", $dtype) }
-if ($attn)        { $argList += @("--attn", $attn) }
-if ($image)       { $argList += @("--image", $image) }
-if ($dry_run)     { $argList += "--dry-run" }
+$argv = @($engine)
+if ($mode)        { $argv += @("--mode", $mode) }
+if ($prompt)      { $argv += @("--prompt", $prompt) }
+if ($neg_prompt)  { $argv += @("--neg_prompt", $neg_prompt) }
+if ($sampler)     { $argv += @("--sampler", $sampler) }
+if ($steps)       { $argv += @("--steps", $steps) }
+if ($cfg)         { $argv += @("--cfg", $cfg) }
+if ($seed -ge 0)  { $argv += @("--seed", $seed) }
+if ($fps)         { $argv += @("--fps", $fps) }
+if ($frames)      { $argv += @("--frames", $frames) }
+if ($width)       { $argv += @("--width", $width) }
+if ($height)      { $argv += @("--height", $height) }
+if ($batch_count) { $argv += @("--batch_count", $batch_count) }
+if ($batch_size)  { $argv += @("--batch_size", $batch_size) }
+if ($outdir)      { $argv += @("--outdir", $outdir) }
+if ($model_dir)   { $argv += @("--model_dir", $model_dir) }
+if ($dtype)       { $argv += @("--dtype", $dtype) }
+if ($attn)        { $argv += @("--attn", $attn) }
+if ($image)       { $argv += @("--image", $image) }
+if ($dry_run)     { $argv += "--dry-run" }
 
-& $python $engine @argList
+Write-Host "[WAN shim] Launch: $python $($argv -join ' ')"
+& $python @argv
 exit $LASTEXITCODE
