@@ -348,7 +348,7 @@ def _init_pipe(
     model_dir: Optional[str],
     dtype: str,
     ignore_mismatch: bool = False,
-    compile_unet: bool = False,
+    compile_mode: str = "off",
 ):
     """Load and cache the diffusers pipeline."""
     global _PIPE
@@ -378,10 +378,10 @@ def _init_pipe(
     log(f"Loading model: {model_dir}")
     pipe = build_pipe(model_dir, dtype, ignore_mismatch)
 
-    if compile_unet:
+    if compile_mode != "off":
         try:
-            pipe.unet = torch.compile(pipe.unet, mode="reduce-overhead")
-            log("Compiled UNet with torch.compile")
+            pipe.unet = torch.compile(pipe.unet, mode=compile_mode)
+            log(f"Compiled UNet with torch.compile (mode={compile_mode})")
         except Exception as e:
             log(f"torch.compile failed: {e}")
 
@@ -506,6 +506,10 @@ def _generate_with_pipe(pipe, params: dict):
         log("flash_attn requested but unavailable; using SDPA")
     log(f"Attention backend: {backend}")
 
+    mesh = params.get("mesh", "off")
+    if mesh != "off":
+        log(f"Mesh strategy: {mesh}")
+
     result, last_err = None, None
     for with_cb in (True, False):
         try:
@@ -601,9 +605,9 @@ def _generate_with_pipe(pipe, params: dict):
     return {"json": json_path, "mp4": mp4_path}
 
 
-def _worker_loop(q, model_dir, dtype, ignore_mismatch, compile_unet):
+def _worker_loop(q, model_dir, dtype, ignore_mismatch, compile_mode):
     try:
-        pipe = _init_pipe(model_dir, dtype, ignore_mismatch, compile_unet)
+        pipe = _init_pipe(model_dir, dtype, ignore_mismatch, compile_mode)
     except Exception as e:
         log(f"Worker failed to initialize pipeline: {e}")
         return
@@ -622,7 +626,7 @@ def init_worker(
     model_dir: Optional[str] = None,
     dtype: str = "bfloat16",
     ignore_mismatch: bool = False,
-    compile_unet: bool = False,
+    compile_mode: str = "off",
 ):
     """Start background worker that holds the pipeline in memory."""
     global _WORKER, _JOB_QUEUE
@@ -631,7 +635,7 @@ def init_worker(
     _JOB_QUEUE = mp.Queue()
     _WORKER = mp.Process(
         target=_worker_loop,
-        args=(_JOB_QUEUE, model_dir, dtype, ignore_mismatch, compile_unet),
+        args=(_JOB_QUEUE, model_dir, dtype, ignore_mismatch, compile_mode),
         daemon=True,
     )
     _WORKER.start()
@@ -652,7 +656,7 @@ def generate(**params):
             params.get("model_dir"),
             params.get("dtype", "bfloat16"),
             params.get("ignore_mismatch", False),
-            params.get("compile", False),
+            params.get("compile", "off"),
         )
         return _generate_with_pipe(pipe, params)
 
@@ -693,9 +697,14 @@ def main():
     p.add_argument("--model_dir", default="")
     p.add_argument("--dtype", default="bfloat16")
     p.add_argument("--attn", default="auto", choices=["auto", "flash", "sdpa"])
+    p.add_argument("--mesh", choices=["off", "grid", "tile"], default="off")
+    p.add_argument(
+        "--compile",
+        choices=["off", "default", "reduce-overhead"],
+        default="off",
+    )
     p.add_argument("--ignore-mismatch", action="store_true", dest="ignore_mismatch")
     p.add_argument("--dry-run", "--no-model", action="store_true", dest="dry_run")
-    p.add_argument("--compile", action="store_true", dest="compile")
     p.add_argument("--print-config", action="store_true", dest="print_config")
     args = p.parse_args()
 
@@ -723,8 +732,25 @@ def main():
             for sf in subfolders:
                 log(f"Subfolder: {sf} -> {os.path.join(model_dir, sf)}")
             backend, _ = _select_attn_ctx(args.attn)
+            try:
+                import torch
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            except Exception:
+                device = "unknown"
             log(f"Attention backend: {backend}")
-            OK("DRY_RUN", backend=backend, model_dir=model_dir, subfolders=subfolders)
+            log(f"Mesh: {args.mesh}")
+            log(f"Compile: {args.compile}")
+            log(f"Device: {device}, dtype: {args.dtype}")
+            OK(
+                "DRY_RUN",
+                backend=backend,
+                mesh=args.mesh,
+                compile=args.compile,
+                device=device,
+                dtype=args.dtype,
+                model_dir=model_dir,
+                subfolders=subfolders,
+            )
         except Exception as e:
             FAIL("DRY_RUN", error=str(e), tb=traceback.format_exc(), params=params)
 

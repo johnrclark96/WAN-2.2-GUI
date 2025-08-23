@@ -7,8 +7,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-
-from wan_ps1_engine import main
+from wan_ps1_engine import main  # noqa: E402
 
 
 def make_model_dir(tmp_path: Path) -> Path:
@@ -24,7 +23,11 @@ def make_model_dir(tmp_path: Path) -> Path:
     return model_dir
 
 
-def test_dry_run_backend(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize(
+    "mesh,compile_mode",
+    [("off", "off"), ("grid", "reduce-overhead")],
+)
+def test_dry_run_backend(monkeypatch, tmp_path, capsys, mesh, compile_mode):
     model_dir = make_model_dir(tmp_path)
     argv = [
         "wan_ps1_engine.py",
@@ -42,12 +45,19 @@ def test_dry_run_backend(monkeypatch, tmp_path, capsys):
         "--model_dir",
         str(model_dir),
     ]
+    if mesh != "off":
+        argv += ["--mesh", mesh]
+    if compile_mode != "off":
+        argv += ["--compile", compile_mode]
     monkeypatch.setattr(sys, "argv", argv)
     dummy = mock.Mock()
     with mock.patch.dict(sys.modules, {"diffusers": dummy}):
         with pytest.raises(SystemExit) as e:
             main()
     assert e.value.code == 0
-    out = capsys.readouterr().out
-    assert "Attention backend" in out
+    out = capsys.readouterr().out.strip().splitlines()[-1]
+    assert out.startswith("[RESULT] OK DRY_RUN ")
+    data = json.loads(out.split("DRY_RUN ", 1)[1])
+    assert data["mesh"] == mesh
+    assert data["compile"] == compile_mode
     dummy.DiffusionPipeline.from_pretrained.assert_not_called()
