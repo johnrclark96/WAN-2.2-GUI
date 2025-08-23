@@ -120,7 +120,19 @@ def detect_model_dir(root: str) -> Optional[str]:
 
 def build_pipe(model_dir: str, dtype_str: str = "bfloat16"):
     import torch
-    from diffusers import WanPipeline, AutoModel
+    from diffusers import AutoModel
+
+    # WanPipeline used to be exported from diffusers but newer versions only
+    # expose it via trust_remote_code.  Try the explicit import first and fall
+    # back to DiffusionPipeline with remote code if it isn't available.
+    try:  # new diffusers versions (<0.30) drop WanPipeline from the top level
+        from diffusers import WanPipeline as _Pipe
+        pipe_kwargs = {}
+    except Exception:
+        from diffusers import DiffusionPipeline as _Pipe  # type: ignore
+        pipe_kwargs = {"trust_remote_code": True}
+        log("WanPipeline not found in diffusers; using DiffusionPipeline with trust_remote_code")
+
     torch_dtype = getattr(torch, dtype_str, torch.bfloat16)
 
     # The VAE's config may contain stale keys (e.g. clip_output) that newer
@@ -139,7 +151,12 @@ def build_pipe(model_dir: str, dtype_str: str = "bfloat16"):
 
     # Keep VAE numerics in float32 for stability
     vae = AutoModel.from_pretrained(model_dir, subfolder="vae", torch_dtype=torch.float32)
-    pipe = WanPipeline.from_pretrained(model_dir, vae=vae, torch_dtype=torch_dtype)
+
+    try:
+        pipe = _Pipe.from_pretrained(model_dir, vae=vae, torch_dtype=torch_dtype, **pipe_kwargs)
+    except Exception as e:
+        log(f"Failed to load pipeline: {e}")
+        raise
     return pipe
 
 def apply_wan_scheduler_fix(pipe, sampler: str, width: int, height: int):
@@ -232,9 +249,18 @@ def normalize_resolution(pipe, w: int, h: int):
 
 def save_video(frames, fps: int, outpath: str):
     """Stream frames to an ffmpeg writer without manual cache clearing."""
-    import imageio_ffmpeg as ffmpeg, numpy as np
+    try:
+        import imageio_ffmpeg as ffmpeg, numpy as np
+    except Exception as e:
+        log(f"Video writer imports failed: {e}")
+        raise
+
     frames = iter(frames)
-    first = np.asarray(next(frames))
+    try:
+        first = np.asarray(next(frames))
+    except StopIteration:
+        raise RuntimeError("No frames to save")
+
     h, w = first.shape[:2]
     writer = ffmpeg.write_frames(outpath, size=(w, h), fps=fps)
     writer.send(None)
