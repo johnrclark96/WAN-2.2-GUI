@@ -2,11 +2,16 @@
 
 Minimal runner and GUI for the WAN 2.2 video generation pipelines.
 
-## Dependency Pins
+## Quick start (dry-run)
 
-- `diffusers==0.31.0`
-- `transformers==4.49.0` *(pulls `tokenizers` 0.21.x automatically)*
+Run the CLI without downloading models to verify the environment:
 
-The SDPA/flash-attention selection logic in `wan_ps1_engine.py` is unaffected by these changes.
+```bash
+python wan_ps1_engine.py --dry-run --attn auto --mode t2v --frames 8 --width 512 --height 288 --model_dir models/WAN
+```
+
+## Runtime setup
+
+See [docs/env.md](docs/env.md) for pinned dependency versions and installation notes.
 
 See [CHANGELOG.md](CHANGELOG.md) for recent updates.

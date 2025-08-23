@@ -4,7 +4,7 @@
 
 - Add `--dry-run`/`--no-model` option, attention backend selection, and VAE config validation.
 - Report `[RESULT] OK` or `[RESULT] FAIL` with traceback for pipeline init.
-- Add CI workflow running `py_compile`, `ruff`, `mypy`, and CLI sanity checks.
+- Add CI workflow running `compileall`, `ruff`, `mypy`, and CLI sanity checks.
 - Fix AutoModel import by using `transformers.AutoModel` and `AutoTokenizer` for text encoders.
 - Load VAE with `diffusers.AutoencoderKL`.
 - Added defensive import check for `transformers`.
