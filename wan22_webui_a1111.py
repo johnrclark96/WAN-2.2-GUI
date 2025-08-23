@@ -1,44 +1,160 @@
 #!/usr/bin/env python
-# wan22_webui_a1111.py – A1111-style Gradio UI for WAN 2.2
+"""Gradio-based WAN 2.2 front-end for A1111 style workflow."""
+
+from __future__ import annotations
 
 import argparse
-import socket
-from gui.layout import build_app
+import subprocess
+from collections import deque
+from pathlib import Path
+from typing import List
 
-def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.2)
-            return s.connect_ex((host, port)) == 0
-    except Exception:
-        return False
+import gradio as gr
+
+ROOT = Path(__file__).resolve().parent
+RUNNER = ROOT / "wan_runner.ps1"
+DEFAULT_MODEL_DIR = "D:/wan22/models/Wan2.2-TI2V-5B-Diffusers"
+DEFAULT_OUTDIR = "D:/wan22/outputs"
+
+
+def snap32(v: int) -> int:
+    return max(32, v // 32 * 32)
+
+
+def build_args(values: dict) -> List[str]:
+    args = ["-ExecutionPolicy", "Bypass", "-File", str(RUNNER)]
+    for key, val in values.items():
+        if val is None or val == "":
+            continue
+        flag = f"--{key}"
+        if isinstance(val, bool):
+            if val:
+                args.append(flag)
+        else:
+            args.extend([flag, str(val)])
+    return ["powershell"] + args
+
+
+def run_cmd(**kw):
+    mode = kw["mode"]
+    prompt = kw["prompt"] or ""
+    neg = kw["neg_prompt"] or ""
+    image = kw.get("image")
+
+    kw["width"] = snap32(int(kw["width"]))
+    kw["height"] = snap32(int(kw["height"]))
+
+    if kw["frames"] < 1 or kw["steps"] < 1 or kw["batch_count"] < 1 or kw["batch_size"] < 1:
+        raise gr.Error("steps, frames, batch_count and batch_size must be >=1")
+    if mode in {"t2v", "ti2v"} and not prompt.strip():
+        raise gr.Error("prompt required for text modes")
+    if mode in {"i2v", "ti2v"} and not image:
+        raise gr.Error("image required for image modes")
+
+    args = {
+        "mode": mode,
+        "prompt": prompt,
+        "neg_prompt": neg,
+        "sampler": kw["sampler"],
+        "steps": kw["steps"],
+        "cfg": kw["cfg"],
+        "seed": kw["seed"],
+        "fps": kw["fps"],
+        "frames": kw["frames"],
+        "width": kw["width"],
+        "height": kw["height"],
+        "batch_count": kw["batch_count"],
+        "batch_size": kw["batch_size"],
+        "outdir": kw["outdir"],
+        "model_dir": kw["model_dir"],
+        "dtype": kw["dtype"],
+        "attn": kw["attn"],
+        "image": image,
+    }
+    cmd = build_args(args)
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines = deque(maxlen=200)
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        lines.append(line.rstrip())
+        yield "\n".join(lines)
+    proc.wait()
+    lines.append(f"[exit {proc.returncode}]")
+    yield "\n".join(lines)
+
+
+def build_ui():
+    with gr.Blocks(title="WAN 2.2 GUI") as demo:
+        with gr.Column():
+            mode = gr.Dropdown(["t2v", "i2v", "ti2v"], value="t2v", label="Mode")
+            prompt = gr.Textbox(label="Prompt", lines=3)
+            neg_prompt = gr.Textbox(label="Negative Prompt", lines=2)
+            image = gr.Image(type="filepath", label="Init Image")
+            sampler = gr.Dropdown(["unipc"], value="unipc", label="Sampler")
+            steps = gr.Slider(1, 100, value=20, step=1, label="Steps")
+            cfg = gr.Slider(0, 20, value=7.0, step=0.5, label="CFG")
+            seed = gr.Number(value=-1, label="Seed (-1=random)")
+            fps = gr.Slider(1, 60, value=24, step=1, label="FPS")
+            frames = gr.Slider(1, 200, value=16, step=1, label="Frames")
+            width = gr.Number(value=768, label="Width")
+            height = gr.Number(value=432, label="Height")
+            batch_count = gr.Number(value=1, label="Batch Count")
+            batch_size = gr.Number(value=1, label="Batch Size")
+            model_dir = gr.Textbox(value=DEFAULT_MODEL_DIR, label="Model Dir")
+            outdir = gr.Textbox(value=DEFAULT_OUTDIR, label="Output Dir")
+            dtype = gr.Dropdown(["bfloat16", "float16", "float32"], value="bfloat16", label="DType")
+            attn = gr.Dropdown(["auto", "flash", "sdpa", "math"], value="auto", label="Attention")
+            run = gr.Button("Generate")
+            log = gr.Textbox(label="Log", lines=20)
+
+        run.click(
+            run_cmd,
+            inputs=[
+                mode,
+                prompt,
+                neg_prompt,
+                sampler,
+                steps,
+                cfg,
+                seed,
+                fps,
+                frames,
+                width,
+                height,
+                batch_count,
+                batch_size,
+                outdir,
+                model_dir,
+                dtype,
+                attn,
+                image,
+            ],
+            outputs=log,
+        )
+    return demo
+
+
+def parse_args():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, default=7862)
+    ap.add_argument("--listen", action="store_true")
+    ap.add_argument("--auth", type=str, default=None)
+    return ap.parse_args()
+
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=7860)
-    ap.add_argument("--listen", action="store_true", help="Allow other PCs to access, bind to 0.0.0.0")
-    ap.add_argument("--auth", type=str, default=None, help="Optional basic auth (user:pass)")
-    args = ap.parse_args()
-
-    ui = build_app()
+    args = parse_args()
+    ui = build_ui()
     auth = tuple(args.auth.split(":", 1)) if args.auth and ":" in args.auth else None
-
-    # Auto-switch port if 7860 is busy (e.g., if Stable Diffusion WebUI is running)
-    chosen_port = args.port
-    if args.port == 7860 and is_port_in_use(7860):
-        if not is_port_in_use(7861):
-            print("[ui] Port 7860 busy; switching to 7861.", flush=True)
-            chosen_port = 7861
-        else:
-            print("[ui] Ports 7860 and 7861 are busy. Using 7860 and letting Gradio handle the conflict.", flush=True)
-
     ui.launch(
-        server_name=("0.0.0.0" if args.listen else "127.0.0.1"),
-        server_port=chosen_port,
+        server_name="0.0.0.0" if args.listen else "127.0.0.1",
+        server_port=args.port,
         auth=auth,
         inbrowser=False,
         show_api=False,
     )
 
-if __name__ == "__main__":
+
+if __name__ == "__main__":  # pragma: no cover
     main()
