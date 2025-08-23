@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # wan_ps1_engine.py — pure Python engine the PS1 calls (no fallback)
 
-import os, re, sys, json, time, argparse, random, gc
+import os, re, sys, json, time, argparse, random, gc, contextlib
 from pathlib import Path
 
 def log(msg): print(msg, flush=True)
@@ -27,6 +27,7 @@ def build_argparser():
     ap.add_argument("--base", type=str, default="", help="Specific model path or HF id")
     ap.add_argument("--lora", action="append", help="LoRA as path[:scale]. Repeatable.")
     ap.add_argument("--extra", nargs=argparse.REMAINDER, help="Unused; for parity with shim")
+    ap.add_argument("--attn", choices=["auto", "flash", "sdpa"], default="auto")
     return ap
 
 def parse_loras(loras):
@@ -50,6 +51,36 @@ def group_lora_keys(sd):
         alpha = base + "alpha"
         if down in sd:
             yield base, up, down, (alpha if alpha in sd else None)
+
+
+def _detect_flash_attn() -> bool:
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return False
+        import flash_attn  # noqa: F401
+        major, _ = torch.cuda.get_device_capability()
+        return major >= 8
+    except Exception:
+        return False
+
+
+def _select_attn_ctx(pref: str):
+    try:
+        from torch.backends.cuda import sdp_kernel
+    except Exception:
+        return "sdpa", None
+
+    use_flash = pref == "flash" or (pref == "auto" and _detect_flash_attn())
+    if use_flash:
+        try:
+            return "flash", sdp_kernel(enable_flash=True, enable_mem_efficient=False, enable_math=False)
+        except Exception:
+            pass
+    try:
+        return "sdpa", sdp_kernel(enable_flash=False, enable_mem_efficient=True, enable_math=True)
+    except Exception:
+        return "sdpa", None
 
 def main():
     args = build_argparser().parse_args()
@@ -117,13 +148,6 @@ def main():
             log(f"[ps1-engine] Model CPU offload failed: {e}")
     if not offload_done and hasattr(pipe, "to"):
         pipe.to("cuda" if torch.cuda.is_available() else "cpu")
-
-    if hasattr(pipe, "enable_xformers_memory_efficient_attention"):
-        try:
-            pipe.enable_xformers_memory_efficient_attention()
-            log("[ps1-engine] Xformers memory-efficient attention enabled")
-        except Exception:
-            pass
 
     # LoRA merge (best-effort)
     loras = parse_loras(args.lora)
@@ -204,6 +228,11 @@ def main():
     if args.mode in ("i2v", "ti2v") and args.init_image:
         common["image"] = args.init_image
 
+    backend, attn_ctx = _select_attn_ctx(args.attn)
+    if args.attn == "flash" and backend != "flash":
+        log("[ps1-engine] flash_attn requested but unavailable; using SDPA")
+    log(f"[ps1-engine] Attention backend: {backend}")
+
     # Try several call signatures; start with fps, then fall back gracefully
     variants = [
         {"num_frames": int(args.frames), "fps": fps_i},
@@ -223,7 +252,9 @@ def main():
                 f"[ps1-engine] Generating... steps={kw.get('num_inference_steps')} "
                 f"frames={kw.get('num_frames') or kw.get('video_length')} fps={kw.get('fps')}"
             )
-            out = pipe(**kw)
+            ctx = attn_ctx if attn_ctx is not None else contextlib.nullcontext()
+            with torch.inference_mode(), ctx:
+                out = pipe(**kw)
             break
         except TypeError as e:
             last_err = e
