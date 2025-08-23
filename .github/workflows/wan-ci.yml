@@ -11,8 +11,10 @@ jobs:
       - run: ruff --version && mypy --version && pytest --version
       - run: ruff check .
       - run: mypy --ignore-missing-imports wan_ps1_engine.py
-      - run: python -m py_compile **/*.py
+      - run: python -m compileall -f -q .
       - run: python wan_ps1_engine.py --help
-      - run: python wan_ps1_engine.py --dry-run --attn auto --mode t2v --frames 8 --width 512 --height 288 --model_dir models/WAN
-      - run: python wan_ps1_engine.py --dry-run --attn auto --mode t2v --frames 8 --width 512 --height 288 --model_dir models/WAN --mesh grid --compile reduce-overhead
+      - run: >
+          python wan_ps1_engine.py --dry-run --attn auto --mode t2v --frames 8 --width 512 --height 288 --model_dir models/WAN
+      - run: >
+          python wan_ps1_engine.py --dry-run --attn auto --mode t2v --frames 8 --width 512 --height 288 --model_dir models/WAN --mesh grid --compile reduce-overhead
       - run: pytest -q
