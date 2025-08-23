@@ -71,6 +71,11 @@ except Exception:
     pass
 # --- end perf ---
 
+try:
+    from transformers import AutoModel, AutoTokenizer
+except Exception as e:
+    raise RuntimeError("Transformers AutoModel import failed; check versions") from e
+
 
 def _detect_flash_attn() -> bool:
     """Return True if flash_attn is available and GPU is supported."""
@@ -120,7 +125,7 @@ def detect_model_dir(root: str) -> Optional[str]:
 
 def build_pipe(model_dir: str, dtype_str: str = "bfloat16"):
     import torch
-    from diffusers import AutoModel
+    from diffusers import AutoencoderKL
 
     # WanPipeline used to be exported from diffusers but newer versions only
     # expose it via trust_remote_code.  Try the explicit import first and fall
@@ -150,10 +155,19 @@ def build_pipe(model_dir: str, dtype_str: str = "bfloat16"):
         log(f"VAE config cleanup failed: {e}")
 
     # Keep VAE numerics in float32 for stability
-    vae = AutoModel.from_pretrained(model_dir, subfolder="vae", torch_dtype=torch.float32)
+    vae = AutoencoderKL.from_pretrained(model_dir, subfolder="vae", torch_dtype=torch.float32)
+    text_encoder = AutoModel.from_pretrained(model_dir, subfolder="text_encoder", torch_dtype=torch_dtype)
+    tokenizer = AutoTokenizer.from_pretrained(model_dir, subfolder="tokenizer")
 
     try:
-        pipe = _Pipe.from_pretrained(model_dir, vae=vae, torch_dtype=torch_dtype, **pipe_kwargs)
+        pipe = _Pipe.from_pretrained(
+            model_dir,
+            vae=vae,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            torch_dtype=torch_dtype,
+            **pipe_kwargs,
+        )
     except Exception as e:
         log(f"Failed to load pipeline: {e}")
         raise
