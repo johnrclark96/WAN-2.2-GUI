@@ -127,8 +127,24 @@ def detect_model_dir(root: str) -> Optional[str]:
     for p in cands:
         if os.path.isdir(p):
             return p
-    p = os.environ.get("WAN22_MODEL_DIR")
-    return p if p and os.path.isdir(p) else None
+    env_p = os.environ.get("WAN22_MODEL_DIR")
+    return env_p if env_p and os.path.isdir(env_p) else None
+
+
+def check_vae_config(cfg_path: str):
+    """Warn if required VAE config keys are missing."""
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        log(f"VAE config read failed: {e}")
+        return None
+    missing = [k for k in ("base_dim", "z_dim") if k not in cfg]
+    if missing:
+        log(f"VAE config missing keys: {', '.join(missing)}")
+    return cfg
 
 def build_pipe(model_dir: str, dtype_str: str = "bfloat16"):
     import torch
@@ -149,12 +165,12 @@ def build_pipe(model_dir: str, dtype_str: str = "bfloat16"):
 
     # The VAE's config may contain stale keys (e.g. clip_output) that newer
     # diffusers versions warn about. Remove them before loading to keep the
-    # console clean and avoid confusing users.
+    # console clean and avoid confusing users. Also warn if required keys are
+    # missing.
     cfg_path = os.path.join(model_dir, "vae", "config.json")
     try:
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        if cfg.pop("clip_output", None) is not None:
+        cfg = check_vae_config(cfg_path)
+        if cfg and cfg.pop("clip_output", None) is not None:
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump(cfg, f, indent=2)
             log("Removed deprecated 'clip_output' from VAE config")
@@ -599,13 +615,40 @@ def main():
     p.add_argument("--model_dir", default="")
     p.add_argument("--dtype", default="bfloat16")
     p.add_argument("--attn", default="auto", choices=["auto", "flash", "sdpa"])
+    p.add_argument("--dry-run", "--no-model", action="store_true", dest="dry_run")
     args = p.parse_args()
 
-    init_worker(args.model_dir, args.dtype)
-    res = generate(**vars(args))
-    log(f"Generation completed: {res}")
-    shutdown_worker()
-    return 0
+    if args.dry_run:
+        root = os.path.dirname(os.path.abspath(__file__))
+        model_dir = args.model_dir or detect_model_dir(root)
+        if model_dir:
+            model_dir = os.path.abspath(model_dir)
+            log(f"Model dir: {model_dir}")
+            cfg_path = os.path.join(model_dir, "vae", "config.json")
+            check_vae_config(cfg_path)
+        else:
+            log("Model directory not found")
+        backend, _ = _select_attn_ctx(args.attn)
+        log(f"Attention backend: {backend}")
+        print("[RESULT] OK")
+        return 0
+
+    rc = 0
+    try:
+        init_worker(args.model_dir, args.dtype)
+        params = vars(args).copy()
+        params.pop("dry_run", None)
+        res = generate(**params)
+        log(f"Generation completed: {res}")
+        print("[RESULT] OK")
+    except Exception as e:
+        import traceback
+        print(f"[RESULT] FAIL {e}")
+        traceback.print_exc()
+        rc = 1
+    finally:
+        shutdown_worker()
+    return rc
 
 if __name__ == "__main__":
     sys.exit(main())
