@@ -8,7 +8,7 @@ pip install --upgrade pip
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # Core libs
-pip install diffusers==0.30.2 transformers accelerate safetensors einops omegaconf
+pip install diffusers==0.31.0 transformers==4.49.0 accelerate safetensors einops omegaconf
 # IO & video
 pip install imageio imageio-ffmpeg decord
 
