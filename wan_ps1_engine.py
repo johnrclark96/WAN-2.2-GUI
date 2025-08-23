@@ -442,6 +442,24 @@ def _generate_with_pipe(pipe, params: dict):
     if frames_out is None:
         raise RuntimeError("No frames returned from pipeline")
 
+    if frames <= 1 or len(frames_out) <= 1:
+        try:
+            from PIL import Image
+            img_path = os.path.join(outdir, base + ".png")
+            Image.fromarray(frames_out[0]).save(img_path)
+            log(f"wrote: {img_path}")
+            print(json.dumps({"event": "done", "image": img_path}), flush=True)
+            del result, frames_out, pipe
+            gc.collect()
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            return {"json": json_path, "image": img_path}
+        except Exception as e:
+            log(f"Failed to save image: {e}")
+            raise
+
     def _frame_gen(frames_list):
         for i, frame in enumerate(frames_list):
             yield frame

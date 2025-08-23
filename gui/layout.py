@@ -160,18 +160,19 @@ def build_cmd(
 PROC = None
 def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=True)):
     """
-    Run the generation subprocess and yield (logs, video_path, info_dict) for streaming.
+    Run the generation subprocess and yield (logs, video_path, image_path, info_dict) for streaming.
     """
     global PROC
     logs = ""
     video = None
+    image = None
     info = {"command": " ".join(cmd)}
     start_time = time.time()
     had_error = False
 
     progress(0.0, desc="Starting")
     # Initial yield (empty) to refresh UI immediately
-    yield logs, None, info
+    yield logs, None, None, info
 
     try:
         PROC = subprocess.Popen(
@@ -207,13 +208,18 @@ def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=Tru
                     progress(pct / 100.0, desc=desc)
                     handled = True
                 elif ev == "done":
-                    path = msg.get("video")
-                    if path and not video:
+                    path_v = msg.get("video")
+                    path_i = msg.get("image")
+                    path = path_v or path_i
+                    if path:
                         p = Path(path)
                         if not p.is_absolute():
                             p = (outdir / p).resolve()
                         if p.exists():
-                            video = p.as_posix()
+                            if path_v and not video:
+                                video = p.as_posix()
+                            elif path_i and not image:
+                                image = p.as_posix()
                     handled = True
             if not handled:
                 # Fallback to legacy text parsing
@@ -234,14 +240,18 @@ def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=Tru
                         pct = int(m_pct.group(1))
                         progress(pct / 100.0, desc=f"Generating {pct}%")
                 # Detect a saved output path in the engine logs:
-                m = re.search(r"(saved|wrote|output)[:\s]+(.+\.(?:mp4|gif|webm|mov))", line, re.I)
-                if m and not video:
+                m = re.search(r"(saved|wrote|output)[:\s]+(.+\.(?:mp4|gif|webm|mov|png|jpg|jpeg|webp))", line, re.I)
+                if m:
                     p = Path(m.group(2).strip().strip('"'))
                     if not p.is_absolute():
                         p = (outdir / p).resolve()
                     if p.exists():
-                        video = p.as_posix()
-            yield logs, video, info
+                        ext = p.suffix.lower()
+                        if ext in (".mp4", ".gif", ".webm", ".mov") and not video:
+                            video = p.as_posix()
+                        elif ext in (".png", ".jpg", ".jpeg", ".webp") and not image:
+                            image = p.as_posix()
+            yield logs, video, image, info
         rc = PROC.wait()
         info["return_code"] = rc
         logs += f"\n[Exit code] {rc}\n"
@@ -257,9 +267,9 @@ def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=Tru
         progress(0, desc="Error")
     finally:
         # If no video caught in logs, try finding the newest file in outdir as fallback
-        if not video and outdir.exists():
+        if not video and not image and outdir.exists():
             newest, latest_time = None, 0
-            for ext in (".mp4", ".gif", ".webm", ".mov"):
+            for ext in (".mp4", ".gif", ".webm", ".mov", ".png", ".jpg", ".jpeg", ".webp"):
                 for f in outdir.rglob(f"*{ext}"):
                     try:
                         t = f.stat().st_mtime
@@ -268,13 +278,17 @@ def stream_run(cmd: List[str], outdir: Path, progress=gr.Progress(track_tqdm=Tru
                     if t >= start_time and t > latest_time:
                         newest, latest_time = f, t
             if newest:
-                video = newest.as_posix()
+                p = newest.as_posix()
+                if newest.suffix.lower() in (".mp4", ".gif", ".webm", ".mov"):
+                    video = p
+                else:
+                    image = p
         PROC = None
-        if had_error or not video:
+        if had_error or (not video and not image):
             progress(0, desc="Error")
         else:
             progress(1.0, desc="Done")
-        yield logs, video, info
+        yield logs, video, image, info
 
 def interrupt_proc():
     """Terminate the running generation, if any."""
@@ -377,7 +391,8 @@ def build_app():
 
                         with gr.Row():
                             fps = gr.Slider(1, 60, value=24, step=1, label="FPS")
-                            frames = gr.Slider(8, 240, value=48, step=1, label="Frames")
+                            # Frames must satisfy (n-1) % 4 == 0 for WAN's scheduler
+                            frames = gr.Slider(1, 241, value=49, step=4, label="Frames")
 
                         with gr.Row():
                             batch_count = gr.Slider(1, 8, value=1, step=1, label="Batch count")
@@ -400,7 +415,8 @@ def build_app():
                             extra = gr.Textbox(label="Extra args", placeholder="--vae path\\to\\vae.safetensors (etc.)")
 
                     with gr.Column(scale=5, elem_id="right-col"):
-                        result_video = gr.Video(label="Result")
+                        result_video = gr.Video(label="Result Video")
+                        result_image = gr.Image(label="Result Image")
                         gen_info = gr.JSON(label="Generation Info")
                         console = gr.Textbox(label="Console Output", lines=20)
 
@@ -460,7 +476,7 @@ def build_app():
                 generate.click(
                     do_generate_txt,
                     inputs=[prompt, neg, sampler, steps, width, height, fps, frames, batch_count, batch_size, cfg, seed, t_loras, model_sel, runner, outdir, extra],
-                    outputs=[console, result_video, gen_info]
+                    outputs=[console, result_video, result_image, gen_info]
                 )
                 interrupt.click(lambda: interrupt_proc(), inputs=[], outputs=[console])
 
@@ -492,7 +508,8 @@ def build_app():
 
                         with gr.Row():
                             fps2 = gr.Slider(1, 60, value=24, step=1, label="FPS")
-                            frames2 = gr.Slider(8, 240, value=48, step=1, label="Frames")
+                            # Frames must satisfy (n-1) % 4 == 0 for WAN's scheduler
+                            frames2 = gr.Slider(1, 241, value=49, step=4, label="Frames")
 
                         with gr.Row():
                             batch_count2 = gr.Slider(1, 8, value=1, step=1, label="Batch count")
@@ -514,7 +531,8 @@ def build_app():
                             extra2 = gr.Textbox(label="Extra args")
 
                     with gr.Column(scale=5, elem_id="right-col"):
-                        result_video2 = gr.Video(label="Result")
+                        result_video2 = gr.Video(label="Result Video")
+                        result_image2 = gr.Image(label="Result Image")
                         gen_info2 = gr.JSON(label="Generation Info")
                         console2 = gr.Textbox(label="Console Output", lines=20)
 
@@ -565,7 +583,7 @@ def build_app():
                 generate2.click(
                     do_generate_img,
                     inputs=[prompt2, neg2, init_img, sampler2, steps2, width2, height2, fps2, frames2, batch_count2, batch_size2, cfg2, seed2, i_loras, model_sel2, runner2, outdir2, extra2],
-                    outputs=[console2, result_video2, gen_info2]
+                    outputs=[console2, result_video2, result_image2, gen_info2]
                 )
                 interrupt2.click(lambda: interrupt_proc(), inputs=[], outputs=[console2])
 
