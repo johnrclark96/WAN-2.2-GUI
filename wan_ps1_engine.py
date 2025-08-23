@@ -154,8 +154,19 @@ def build_pipe(model_dir: str, dtype_str: str = "bfloat16"):
     except Exception as e:
         log(f"VAE config cleanup failed: {e}")
 
-    # Keep VAE numerics in float32 for stability
-    vae = AutoencoderKL.from_pretrained(model_dir, subfolder="vae", torch_dtype=torch.float32)
+    # Keep VAE numerics in float32 for stability.  The WAN 2.2 checkpoints use a
+    # custom VAE implementation that requires trusting the remote code to load
+    # correctly.  Without `trust_remote_code=True` diffusers falls back to the
+    # builtin AutoencoderKL class, which results in many missing weight errors
+    # like `decoder.mid_block.attentions.0.to_q.weight`.
+    vae = AutoencoderKL.from_pretrained(
+        model_dir,
+        subfolder="vae",
+        torch_dtype=torch.float32,
+        low_cpu_mem_usage=False,
+        device_map=None,
+        trust_remote_code=True,
+    )
     text_encoder = AutoModel.from_pretrained(model_dir, subfolder="text_encoder", torch_dtype=torch_dtype)
     tokenizer = AutoTokenizer.from_pretrained(model_dir, subfolder="tokenizer")
 
