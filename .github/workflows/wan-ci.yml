@@ -18,7 +18,8 @@ jobs:
       - name: Engine --help (WAN-free)
         run: python wan_ps1_engine.py --help
       - name: Engine --dry-run (WAN-free)
-        run: python wan_ps1_engine.py --dry-run --attn auto --mode t2v --prompt ok --frames 8 --width 512 --height 288 --outdir out --model_dir models/WAN
+        run: >
+          python wan_ps1_engine.py --dry-run --attn auto --mode t2v --prompt ok --frames 8 --width 512 --height 288 --outdir out
       - name: Pytest (skip runner test on non-Windows)
         run: pytest -q -k "not test_runner_path"
 
