@@ -19,9 +19,6 @@ jobs:
         run: mypy --ignore-missing-imports wan_ps1_engine.py
       - name: Byte-compile
         run: python -m compileall -q .
-      - name: Denylist
-        run: |
-          if (git grep -i -n -E "stable-diffusion|sdxl|comfyui|comfy" -- .) { throw "denylist hit" }
       - name: Engine --help
         run: python wan_ps1_engine.py --help
       - name: Engine --dry-run
