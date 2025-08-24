@@ -31,5 +31,6 @@ def test_runner_path():
     )
     print("STDOUT:\n", result.stdout)
     print("STDERR:\n", result.stderr)
+    assert result.returncode == 0
     assert "[WAN shim] Launch:" in result.stdout
 

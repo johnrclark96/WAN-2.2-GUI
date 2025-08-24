@@ -30,9 +30,8 @@ print(torch.cuda.is_available())
 
 ## WAN 2.2 Virtual Environment (Windows)
 
-The WAN engine is meant to live in its own virtual environment so it does
-not conflict with other tools such as Stable Diffusion WebUI.  The
-commands below assume PowerShell and a base directory of `D:\wan22`.
+The engine expects a dedicated virtual environment and directory layout
+under `D:\wan22`.  Only the **Wan2.2-TI2V-5B-Diffusers** model is supported.
 
 ```powershell
 cd D:\wan22
@@ -45,18 +44,21 @@ pip install --index-url https://download.pytorch.org/whl/cu121 \
 pip install "diffusers>=0.35.0" transformers>=4.44 accelerate>=0.34 \
     safetensors einops omegaconf imageio imageio-ffmpeg pillow
 
-# smoke test
+# dry run
 python .\wan_ps1_engine.py --dry-run --mode t2v --prompt "ok" \
     --frames 8 --width 512 --height 288 --attn auto --dtype bfloat16
-```
 
-If a model directory is present you can perform a tiny real test:
-
-```powershell
-python .\wan_ps1_engine.py --mode t2v --prompt "sunrise over the ocean" \
+# tiny real examples
+python .\wan_ps1_engine.py --mode t2v --prompt "sunrise" \
     --steps 12 --cfg 6.5 --fps 12 --frames 16 --width 768 --height 432 \
     --outdir D:\wan22\outputs \
     --model_dir D:\wan22\models\Wan2.2-TI2V-5B-Diffusers \
-    --dtype bfloat16 --attn auto --seed 123
+    --dtype bfloat16 --attn auto
+
+python .\wan_ps1_engine.py --mode t2i --prompt "a cat" \
+    --steps 8 --width 512 --height 512 \
+    --outdir D:\wan22\outputs \
+    --model_dir D:\wan22\models\Wan2.2-TI2V-5B-Diffusers \
+    --dtype bfloat16 --attn auto
 ```
 

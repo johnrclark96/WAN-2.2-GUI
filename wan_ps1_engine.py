@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 import time
 import traceback
 from contextlib import nullcontext
@@ -18,6 +20,7 @@ load_image: Any = None
 WanPipeline: Any = None
 AutoencoderKLWan: Any = None
 UniPCMultistepScheduler: Any = None
+_PIPELINE_CACHE: Dict[str, Any] = {}
 
 
 def snap32(x: int) -> int:
@@ -115,18 +118,35 @@ def validate(p: argparse.Namespace) -> None:
         raise ValueError("steps must be >=1")
     if p.batch_count < 1 or p.batch_size < 1:
         raise ValueError("batch_count and batch_size must be >=1")
-    if p.mode in {"t2v", "ti2v"} and not p.prompt.strip():
-        raise ValueError("prompt required for text-to-video")
-    if p.mode in {"i2v", "ti2v"} and not p.image:
-        raise ValueError("image required for image-based modes")
+    if p.mode in {"t2v", "ti2v", "t2i"} and not p.prompt.strip():
+        raise ValueError("prompt required for text modes")
+    if p.mode in {"i2v", "ti2v"}:
+        if not p.image:
+            raise ValueError("image required for image modes")
+        if not Path(p.image).exists():
+            raise FileNotFoundError(f"image not found: {p.image}")
+    if p.mode == "t2i":
+        p.frames = 1
+        p.batch_size = 1
+    if p.width > 1280 or p.height > 720:
+        logging.warning("resolution > 1280x720 may be unstable on a 16GB GPU")
+    if p.frames > 64:
+        logging.warning("frames > 64 may be unstable on a 16GB GPU")
     if p.outdir:
         Path(p.outdir).mkdir(parents=True, exist_ok=True)
-    if not p.dry_run and not p.model_dir:
-        raise ValueError("model_dir is required unless --dry-run")
+    if not p.dry_run:
+        if not p.model_dir:
+            raise ValueError("model_dir is required unless --dry-run")
+        if not Path(p.model_dir).exists():
+            raise FileNotFoundError(f"model_dir not found: {p.model_dir}")
 
 
-def load_pipeline(model_dir: str, dtype: str):  # pragma: no cover - heavy
-    global WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler, torch
+def load_pipeline(model_dir: str, dtype: str, no_cache: bool = False):  # pragma: no cover - heavy
+    global WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler, torch, _PIPELINE_CACHE
+    key = f"{model_dir}|{dtype}"
+    if not no_cache and key in _PIPELINE_CACHE:
+        return _PIPELINE_CACHE[key]
+    start = time.time()
     if WanPipeline is None:
         WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler, _, _ = _lazy_diffusers()
     if torch is None:
@@ -148,8 +168,12 @@ def load_pipeline(model_dir: str, dtype: str):  # pragma: no cover - heavy
     try:
         pipe.enable_model_cpu_offload()
     except Exception as e:  # pragma: no cover - accelerate may be absent
-        print(f"[WARN] CPU offload unavailable: {e}")
+        logging.warning(f"CPU offload unavailable: {e}")
     pipe.transformer.to("cuda")
+    load_time = time.time() - start
+    logging.info(f"Model loaded in {load_time:.2f}s")
+    if not no_cache:
+        _PIPELINE_CACHE[key] = pipe
     return pipe
 
 
@@ -208,7 +232,9 @@ def run_generation(
         with attn_ctx:
             result = pipe(**kwargs)
         elapsed = time.time() - start
-        print(f"[INFO] Batch {bc}: {elapsed:.2f}s total, {elapsed / params.steps:.3f}s/step")
+        logging.info(
+            f"Batch {bc}: {elapsed:.2f}s total, {elapsed / params.steps:.3f}s/step"
+        )
         vids = getattr(result, "frames", getattr(result, "images", []))
         for bi, arr in enumerate(vids):
             if params.frames == 1:
@@ -221,12 +247,13 @@ def run_generation(
                 fpath = Path(params.outdir) / fname
                 export_to_video(arr, output_video_path=fpath, fps=params.fps)
             outputs.append(str(fpath))
+            print(f"[OUTPUT] {fpath}")
     return outputs
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["t2v", "i2v", "ti2v"], default="t2v")
+    parser.add_argument("--mode", choices=["t2v", "i2v", "ti2v", "t2i"], default="t2v")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--neg_prompt", default="")
     parser.add_argument("--sampler", default="unipc")
@@ -240,7 +267,10 @@ def main() -> int:
     parser.add_argument("--batch_count", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--outdir", default="outputs")
-    parser.add_argument("--model_dir", default="")
+    parser.add_argument(
+        "--model_dir",
+        default="D:/wan22/models/Wan2.2-TI2V-5B-Diffusers",
+    )
     parser.add_argument(
         "--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16"
     )
@@ -249,7 +279,11 @@ def main() -> int:
     )
     parser.add_argument("--image", default="")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--no-cache", action="store_true")
     args = parser.parse_args()
+    logging.basicConfig(
+        level=logging.DEBUG if os.getenv("WAN_LOG") == "DEBUG" else logging.INFO
+    )
 
     cfg = vars(args).copy()
 
@@ -275,27 +309,42 @@ def main() -> int:
         print("[RESULT] OK", json.dumps(data))
         return 0
 
-    log_vram("before load")
-    pipe = load_pipeline(args.model_dir, args.dtype)
-    log_vram("after load")
+    from typing import Callable
 
-    attn_name, attn_ctx = attention_context(args.attn)
-    print(f"[INFO] Attention backend: {attn_name}")
+    runner: Callable[[argparse.Namespace], List[str]]
+    if args.mode == "t2i":
+        from core.wan_image import generate_image_wan as runner  # noqa: E402
+    else:
+        from core.wan_video import generate_video_wan as runner  # noqa: E402
 
     try:
-        outputs = run_generation(
-            pipe,
-            args,
-            attn_name,
-            attn_ctx,
-        )
+        outputs = runner(args)
+    except FileNotFoundError as e:
+        sidecar = Path(args.outdir) / f"error_{int(time.time()*1000)}.json"
+        data = {
+            "error": f"FileNotFoundError: {e}",
+            "suggest": str(e),
+            "tb": traceback.format_exc(),
+            "config": cfg,
+        }
+        save_sidecar(sidecar, data)
+        print("[RESULT] FAIL GENERATION", json.dumps(data))
+        return 1
     except Exception as e:
         sidecar = Path(args.outdir) / f"error_{int(time.time()*1000)}.json"
+        suggest = ""
+        if torch is not None and (
+            isinstance(e, getattr(torch.cuda, "OutOfMemoryError", Exception))
+            or "out of memory" in str(e).lower()
+        ):
+            suggest = "reduce resolution or frames, or enable CPU offload"
         data = {
             "error": f"{type(e).__name__}: {e}",
             "tb": traceback.format_exc(),
             "config": cfg,
         }
+        if suggest:
+            data["suggest"] = suggest
         save_sidecar(sidecar, data)
         print("[RESULT] FAIL GENERATION", json.dumps(data))
         return 1
