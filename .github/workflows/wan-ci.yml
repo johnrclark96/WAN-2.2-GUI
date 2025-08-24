@@ -1,39 +1,26 @@
 name: wan-ci
 on: [pull_request, push]
+
 jobs:
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-      - run: python -m pip install -U pip ruff mypy pytest
-      - name: Ruff
-        run: ruff check .
-      - name: Mypy (engine only)
-        run: mypy --ignore-missing-imports wan_ps1_engine.py
-      - name: Byte-compile
-        run: python -m compileall -q .
-      - name: Engine --help (WAN-free)
-        run: python wan_ps1_engine.py --help
-      - name: Engine --dry-run (WAN-free)
-        run: >
-          python wan_ps1_engine.py --dry-run --attn auto --mode t2v --prompt ok --frames 8 --width 512 --height 288 --outdir out
-      - name: Pytest (skip runner test on non-Windows)
-        run: pytest -q -k "not test_runner_path"
-
-  runner:
     runs-on: windows-latest
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
+      - name: Guard deprecated attention API
+        run: |
+          $hits = Select-String -Pattern "torch.backends.cuda.sdp_kernel" -Path (git ls-files)
+          if ($hits) { Write-Error "deprecated API found"; exit 1 }
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - run: python -m pip install -U pip pytest
-      - name: Run only runner test
-        run: pytest -q -k test_runner_path
-
+      - run: pip install ruff mypy pytest
+      - run: ruff check .
+      - run: mypy --ignore-missing-imports wan_ps1_engine.py
+      - run: python -m compileall -q .
+      - run: python wan_ps1_engine.py --help
+      - run: >
+          python wan_ps1_engine.py --dry-run --prompt ok --frames 8 --fps 24 --width 1280 --height 704
+      - run: pytest -q

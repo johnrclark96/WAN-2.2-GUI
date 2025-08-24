@@ -1,12 +1,12 @@
 import argparse
 import sys
-from contextlib import nullcontext
 from pathlib import Path
 import types
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core import wan_video  # noqa: E402
 import wan_ps1_engine as engine  # noqa: E402
 
 
@@ -42,6 +42,7 @@ def test_png_single_frame(tmp_path, monkeypatch):
         mode="t2v",
         image="",
         outdir=str(tmp_path),
+        attn="auto",
     )
     monkeypatch.setattr(engine, "Image", DummyImage)
     monkeypatch.setattr(engine, "torch", types.SimpleNamespace())
@@ -51,7 +52,7 @@ def test_png_single_frame(tmp_path, monkeypatch):
     diffusers.utils = utils
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
     monkeypatch.setitem(sys.modules, "diffusers.utils", utils)
-    outputs = engine.run_generation(DummyPipe(), params, "flash", nullcontext())
+    outputs = wan_video.generate_video_wan(params, pipe=DummyPipe())
     assert outputs[0].endswith(".png")
     assert Path(outputs[0]).exists()
 
@@ -85,6 +86,7 @@ def test_mp4_multi_frame(tmp_path, monkeypatch):
         mode="t2v",
         image="",
         outdir=str(tmp_path),
+        attn="auto",
     )
     utils = types.ModuleType("diffusers.utils")
     utils.export_to_video = fake_export
@@ -93,6 +95,6 @@ def test_mp4_multi_frame(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
     monkeypatch.setitem(sys.modules, "diffusers.utils", utils)
     monkeypatch.setattr(engine, "torch", types.SimpleNamespace())
-    outputs = engine.run_generation(DummyPipe(), params, "flash", nullcontext())
+    outputs = wan_video.generate_video_wan(params, pipe=DummyPipe())
     assert outputs[0].endswith(".mp4")
     assert called["fps"] == 9

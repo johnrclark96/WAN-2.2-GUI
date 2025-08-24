@@ -2,15 +2,28 @@
 
 Minimal runner and GUI for the WAN 2.2 video generation pipelines.
 
-## Quick start (dry-run)
+## Quick start (Windows)
 
-Run the CLI without downloading models to verify the environment:
+The engine expects a virtual environment at `D:\wan22\venv`, models in
+`D:\wan22\models\Wan2.2-TI2V-5B-Diffusers`, and outputs written to
+`D:\wan22\outputs`.
 
-```bash
-python wan_ps1_engine.py --dry-run --attn auto --mode t2v --frames 8 --width 512 --height 288
+Run the lightweight help and dry-run commands to verify the setup:
+
+```powershell
+python wan_ps1_engine.py --help
+python wan_ps1_engine.py --dry-run --mode t2v --prompt ok --frames 8 --fps 24 --width 1280 --height 704
 ```
 
-## Runtime setup
+With models installed the same CLI can generate media:
+
+```powershell
+# text to video
+python wan_ps1_engine.py --mode t2v --prompt "sunrise" --frames 8 --fps 24 --width 1280 --height 704
+
+# text to image (frames=1 yields a PNG)
+python wan_ps1_engine.py --mode t2i --prompt "ok one frame" --frames 1 --width 1280 --height 704
+```
 
 See [docs/env.md](docs/env.md) for pinned dependency versions and installation notes.
 

@@ -107,18 +107,29 @@ def _lazy_utils(require_image: bool = False, force: bool = False):  # pragma: no
 
 
 def validate(p: argparse.Namespace) -> None:
+    if p.mode == "t2i":
+        p.frames = 1
+    if (p.width, p.height) == (1280, 720):
+        p.height = 704
+    elif (p.width, p.height) == (720, 1280):
+        p.width = 704
     p.width = snap32(p.width)
     p.height = snap32(p.height)
     if p.frames < 1:
-        raise ValueError("frames must be >=1")
+        p.frames = 1
     if p.steps < 1:
-        raise ValueError("steps must be >=1")
+        p.steps = 1
     if p.batch_count < 1 or p.batch_size < 1:
         raise ValueError("batch_count and batch_size must be >=1")
-    if p.mode in {"t2v", "ti2v"} and not p.prompt.strip():
-        raise ValueError("prompt required for text-to-video")
-    if p.mode in {"i2v", "ti2v"} and not p.image:
-        raise ValueError("image required for image-based modes")
+    if not p.prompt.strip():
+        raise ValueError("prompt required for generation")
+    if p.mode == "t2v" and p.image:
+        if not Path(p.image).exists():
+            raise ValueError(f"image not found: {p.image}")
+    if p.frames > 64:
+        print("[WARN] frames > 64 may exceed 16 GB VRAM")
+    if p.width > 1280 or p.height > 704:
+        print("[WARN] resolution > 1280x704 may exceed 16 GB VRAM")
     if p.outdir:
         Path(p.outdir).mkdir(parents=True, exist_ok=True)
     if not p.dry_run and not p.model_dir:
@@ -160,9 +171,7 @@ def run_generation(
     attn_ctx,
 ) -> List[str]:
     global torch, Image, export_to_video, load_image
-    need_img = params.frames == 1 or (
-        params.mode in {"i2v", "ti2v"} and params.image
-    )
+    need_img = params.frames == 1 or bool(params.image)
     _lazy_utils(require_image=need_img, force=True)
     generator = None
     if params.seed >= 0 and torch is not None:
@@ -180,7 +189,7 @@ def run_generation(
         "generator": generator,
         "output_type": "np",
     }
-    if params.mode in {"i2v", "ti2v"} and params.image:
+    if params.image:
         img = load_image(params.image).convert("RGB").resize(
             (params.width, params.height), Image.BICUBIC
         )
@@ -226,7 +235,7 @@ def run_generation(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["t2v", "i2v", "ti2v"], default="t2v")
+    parser.add_argument("--mode", choices=["t2v", "t2i"], default="t2v")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--neg_prompt", default="")
     parser.add_argument("--sampler", default="unipc")
@@ -239,7 +248,7 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=432)
     parser.add_argument("--batch_count", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--outdir", default="outputs")
+    parser.add_argument("--outdir", default=r"D:\\wan22\\outputs")
     parser.add_argument(
         "--model_dir",
         default=r"D:\\wan22\\models\\Wan2.2-TI2V-5B-Diffusers",
@@ -256,7 +265,7 @@ def main() -> int:
     cfg = vars(args).copy()
 
     if args.dry_run:
-        outdir = Path(args.outdir or ".")
+        outdir = Path(args.outdir or r"D:\\wan22\\outputs")
         outdir.mkdir(parents=True, exist_ok=True)
         sidecar = outdir / f"dryrun_{int(time.time()*1000)}.json"
         data = {"ok": True, "config": cfg}
@@ -267,7 +276,7 @@ def main() -> int:
     try:
         validate(args)
     except Exception as e:
-        outdir = Path(args.outdir or ".")
+        outdir = Path(args.outdir or r"D:\\wan22\\outputs")
         outdir.mkdir(parents=True, exist_ok=True)
         sidecar = outdir / f"error_{int(time.time()*1000)}.json"
         err = {
@@ -276,23 +285,18 @@ def main() -> int:
             "config": cfg,
         }
         save_sidecar(sidecar, err)
-        print("[RESULT] FAIL GENERATION", json.dumps(err))
+        print("[RESULT] FAIL VALIDATION", json.dumps(err))
         return 1
 
-    log_vram("before load")
-    pipe = load_pipeline(args.model_dir, args.dtype)
-    log_vram("after load")
-
-    attn_name, attn_ctx = attention_context(args.attn)
-    print(f"[INFO] Attention backend: {attn_name}")
+    if args.mode == "t2i":
+        from core import wan_image
+        gen = wan_image.generate_image_wan
+    else:
+        from core import wan_video
+        gen = wan_video.generate_video_wan
 
     try:
-        outputs = run_generation(
-            pipe,
-            args,
-            attn_name,
-            attn_ctx,
-        )
+        outputs = gen(args)
     except Exception as e:
         sidecar = Path(args.outdir) / f"error_{int(time.time()*1000)}.json"
         data = {
@@ -303,6 +307,9 @@ def main() -> int:
         save_sidecar(sidecar, data)
         print("[RESULT] FAIL GENERATION", json.dumps(data))
         return 1
+
+    for out in outputs[:1]:
+        print(f"[OUTPUT] {Path(out).resolve()}")
 
     sidecar = Path(args.outdir) / f"result_{int(time.time()*1000)}.json"
     data = {"ok": True, "outputs": outputs, "config": cfg}

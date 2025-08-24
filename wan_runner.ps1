@@ -26,7 +26,7 @@ $python = "D:\\wan22\\venv\\Scripts\\python.exe"
 $engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
 if (-not (Test-Path $python)) {
-  Write-Host "[WAN shim] Launch: python not found at $python"
+  Write-Host "[WAN shim] Launch: $python (missing)"
   Write-Error "WAN venv python not found at $python"
   exit 1
 }

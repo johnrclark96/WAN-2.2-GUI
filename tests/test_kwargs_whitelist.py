@@ -1,12 +1,12 @@
 import argparse
 import sys
 from pathlib import Path
-from contextlib import nullcontext
 import types
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from core import wan_video  # noqa: E402
 import wan_ps1_engine as engine  # noqa: E402
 
 
@@ -52,9 +52,10 @@ def test_kwargs_whitelist(tmp_path, monkeypatch):
         mode="t2v",
         image="",
         outdir=str(tmp_path),
+        attn="auto",
     )
     monkeypatch.setattr(engine, "Image", DummyImage)
-    engine.run_generation(DummyPipe(), params, "flash", nullcontext())
+    wan_video.generate_video_wan(params, pipe=DummyPipe())
     assert set(captured.keys()) == {
         "prompt",
         "negative_prompt",
