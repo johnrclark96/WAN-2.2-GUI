@@ -7,7 +7,7 @@ Minimal runner and GUI for the WAN 2.2 video generation pipelines.
 Run the CLI without downloading models to verify the environment:
 
 ```bash
-python wan_ps1_engine.py --dry-run --attn auto --mode t2v --frames 8 --width 512 --height 288 --model_dir models/WAN
+python wan_ps1_engine.py --dry-run --attn auto --mode t2v --frames 8 --width 512 --height 288
 ```
 
 ## Runtime setup

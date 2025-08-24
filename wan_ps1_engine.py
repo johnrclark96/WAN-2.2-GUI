@@ -240,7 +240,10 @@ def main() -> int:
     parser.add_argument("--batch_count", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--outdir", default="outputs")
-    parser.add_argument("--model_dir", default="")
+    parser.add_argument(
+        "--model_dir",
+        default=r"D:\\wan22\\models\\Wan2.2-TI2V-5B-Diffusers",
+    )
     parser.add_argument(
         "--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16"
     )
@@ -250,8 +253,16 @@ def main() -> int:
     parser.add_argument("--image", default="")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-
     cfg = vars(args).copy()
+
+    if args.dry_run:
+        outdir = Path(args.outdir or ".")
+        outdir.mkdir(parents=True, exist_ok=True)
+        sidecar = outdir / f"dryrun_{int(time.time()*1000)}.json"
+        data = {"ok": True, "config": cfg}
+        save_sidecar(sidecar, data)
+        print("[RESULT] OK", json.dumps(data))
+        return 0
 
     try:
         validate(args)
@@ -267,13 +278,6 @@ def main() -> int:
         save_sidecar(sidecar, err)
         print("[RESULT] FAIL GENERATION", json.dumps(err))
         return 1
-
-    if args.dry_run:
-        sidecar = Path(args.outdir) / f"dryrun_{int(time.time()*1000)}.json"
-        data = {"ok": True, "config": cfg}
-        save_sidecar(sidecar, data)
-        print("[RESULT] OK", json.dumps(data))
-        return 0
 
     log_vram("before load")
     pipe = load_pipeline(args.model_dir, args.dtype)
