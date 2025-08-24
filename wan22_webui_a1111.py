@@ -46,7 +46,7 @@ def run_cmd(**kw):
 
     if kw["frames"] < 1 or kw["steps"] < 1 or kw["batch_count"] < 1 or kw["batch_size"] < 1:
         raise gr.Error("steps, frames, batch_count and batch_size must be >=1")
-    if mode in {"t2v", "ti2v"} and not prompt.strip():
+    if mode in {"t2v", "ti2v", "t2i"} and not prompt.strip():
         raise gr.Error("prompt required for text modes")
     if mode in {"i2v", "ti2v"} and not image:
         raise gr.Error("image required for image modes")
@@ -54,6 +54,8 @@ def run_cmd(**kw):
     if not Path(kw["model_dir"]).exists():
         raise gr.Error(f"model dir not found: {kw['model_dir']}")
 
+    if mode == "t2i":
+        kw["frames"] = 1
     args = {
         "mode": mode,
         "prompt": prompt,
@@ -90,7 +92,7 @@ def run_cmd(**kw):
 def build_ui():
     with gr.Blocks(title="WAN 2.2 GUI") as demo:
         with gr.Column():
-            mode = gr.Dropdown(["t2v", "i2v", "ti2v"], value="t2v", label="Mode")
+            mode = gr.Dropdown(["t2v", "i2v", "ti2v", "t2i"], value="t2v", label="Mode")
             prompt = gr.Textbox(label="Prompt", lines=3)
             neg_prompt = gr.Textbox(label="Negative Prompt", lines=2)
             image = gr.Image(type="filepath", label="Init Image")

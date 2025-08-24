@@ -21,6 +21,8 @@ def test_attention_api(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(engine, "load_pipeline", lambda *a: DummyPipe())
     monkeypatch.setattr(engine, "run_generation", lambda *a: [])
+    model_dir = tmp_path / "m"
+    model_dir.mkdir()
     argv = [
         "wan_ps1_engine.py",
         "--mode",
@@ -38,7 +40,7 @@ def test_attention_api(tmp_path, monkeypatch, capsys):
         "--outdir",
         str(tmp_path),
         "--model_dir",
-        "m",
+        str(model_dir),
         "--attn",
         "auto",
     ]
