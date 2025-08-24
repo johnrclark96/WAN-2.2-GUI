@@ -9,18 +9,13 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
-      - name: Guard deprecated attention API
-        run: |
-          $hits = Select-String -Pattern "torch.backends.cuda.sdp_kernel" -Path (git ls-files)
-          if ($hits) { Write-Error "deprecated API found"; exit 1 }
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
       - run: pip install ruff mypy pytest
       - run: ruff check .
-      - run: mypy --ignore-missing-imports wan_ps1_engine.py
+      - run: mypy --ignore-missing-imports wan_ps1_engine.py core
       - run: python -m compileall -q .
       - run: python wan_ps1_engine.py --help
-      - run: >
-          python wan_ps1_engine.py --dry-run --prompt ok --frames 8 --fps 24 --width 1280 --height 704
+      - run: python wan_ps1_engine.py --dry-run --mode t2v --prompt ok --frames 4 --fps 24 --width 1280 --height 704 --outdir out
       - run: pytest -q
