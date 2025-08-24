@@ -1,6 +1,7 @@
 import json
 import sys
 from pathlib import Path
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -8,8 +9,8 @@ sys.path.insert(0, str(ROOT))
 import wan_ps1_engine as engine  # noqa: E402
 
 
-def run_main(monkeypatch, tmp_path, args):
-    argv = ["wan_ps1_engine.py"] + args + ["--outdir", str(tmp_path)]
+def run_main(monkeypatch, args):
+    argv = ["wan_ps1_engine.py"] + args
     monkeypatch.setattr(sys, "argv", argv)
     return engine.main()
 
@@ -18,10 +19,14 @@ def read_last_line(capsys):
     return capsys.readouterr().out.strip().splitlines()[-1]
 
 
-def test_dry_run_ok(tmp_path, monkeypatch, capsys):
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows paths only")
+def test_dry_run_ok(monkeypatch, capsys):
+    outdir = Path(r"D:/wan22/outputs")
+    if outdir.exists():
+        for p in outdir.glob("dryrun_*.json"):
+            p.unlink()
     code = run_main(
         monkeypatch,
-        tmp_path,
         [
             "--dry-run",
             "--mode",
@@ -41,4 +46,4 @@ def test_dry_run_ok(tmp_path, monkeypatch, capsys):
     assert out_line.startswith("[RESULT] OK ")
     data = json.loads(out_line.split("[RESULT] OK ", 1)[1])
     assert data["config"]["frames"] == 8
-    assert list(tmp_path.glob("dryrun_*.json"))
+    assert list(outdir.glob("dryrun_*.json"))

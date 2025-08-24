@@ -32,7 +32,10 @@ print(torch.cuda.is_available())
 
 The WAN engine is meant to live in its own virtual environment so it does
 not conflict with other tools such as Stable Diffusion WebUI.  The
-commands below assume PowerShell and a base directory of `D:\wan22`.
+commands below assume PowerShell and a base directory of `D:\wan22` with
+the virtual environment in `D:\wan22\venv`, models in
+`D:\wan22\models\Wan2.2-TI2V-5B-Diffusers` and outputs in
+`D:\wan22\outputs`.
 
 ```powershell
 cd D:\wan22
@@ -45,9 +48,9 @@ pip install --index-url https://download.pytorch.org/whl/cu121 \
 pip install "diffusers>=0.35.0" transformers>=4.44 accelerate>=0.34 \
     safetensors einops omegaconf imageio imageio-ffmpeg pillow
 
-# smoke test
+# smoke test (no models required)
 python .\wan_ps1_engine.py --dry-run --mode t2v --prompt "ok" \
-    --frames 8 --width 512 --height 288 --attn auto --dtype bfloat16
+    --frames 8 --fps 24 --width 1280 --height 704 --attn auto --dtype bfloat16
 ```
 
 If a model directory is present you can perform a tiny real test:
@@ -56,7 +59,13 @@ If a model directory is present you can perform a tiny real test:
 python .\wan_ps1_engine.py --mode t2v --prompt "sunrise over the ocean" \
     --steps 12 --cfg 6.5 --fps 12 --frames 16 --width 768 --height 432 \
     --outdir D:\wan22\outputs \
-    --model_dir D:\wan22\models\Wan2.2-TI2V-5B-Diffusers \
     --dtype bfloat16 --attn auto --seed 123
+
+### Recommended defaults for 16 GB GPUs
+
+For cards with 16 GB of VRAM these options help avoid out of memory errors:
+
+```
+--offload_model true --convert_model_dtype true --t5_cpu true
 ```
 
