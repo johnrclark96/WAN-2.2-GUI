@@ -295,35 +295,33 @@ def build_ui():
             gr.Info(f"mode={mode_v}")
 
             # Command line safe mode that is actually sent to the runner
-            # - Diffusers command line interface only supports the literal strings "t2v" and "t2i"
-            # - The official branch should receive the user’s intended mode
             if eng == "diffusers":
                 cli_mode = "t2i" if int(frames_v) == 1 else "t2v"
             else:  # eng == "official"
                 cli_mode = mode_v
 
-                for line in run_cmd(
-                        eng,
-                        mode=cli_mode,
-                        prompt=prompt_v,
-                        neg_prompt=neg_v,
-                        sampler=sampler_v,
-                        steps=steps_v,
-                        cfg=cfg_v,
-                        seed=seed_v,
-                        fps=fps_v,
-                        frames=frames_v,
-                        width=width_v,
-                        height=height_v,
-                        batch_count=batch_count_v,
-                        batch_size=batch_size_v,
-                        outdir=outdir_v,
-                        model_dir=model_dir_v,
-                        dtype=dtype_v,
-                        attn=attn_v,
-                        image=image_v,
-                ):
-                        yield line
+            for line in run_cmd(
+                eng,
+                mode=cli_mode,
+                prompt=prompt_v,
+                neg_prompt=neg_v,
+                sampler=sampler_v,
+                steps=steps_v,
+                cfg=cfg_v,
+                seed=seed_v,
+                fps=fps_v,
+                frames=frames_v,
+                width=width_v,
+                height=height_v,
+                batch_count=batch_count_v,
+                batch_size=batch_size_v,
+                outdir=outdir_v,
+                model_dir=model_dir_v,
+                dtype=dtype_v,
+                attn=attn_v,
+                image=image_v,
+            ):
+                yield line
 
         # Single click binding that streams from on_run
         run.click(

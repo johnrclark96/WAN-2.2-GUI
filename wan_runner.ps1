@@ -22,7 +22,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Explicit venv interpreter and engine path
+# Explicit virtual environment interpreter and engine path
 $python = "D:\wan22\venv\Scripts\python.exe"
 $engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
@@ -44,7 +44,7 @@ foreach ($d in @(
 # Basic sanity checks
 if (-not (Test-Path $python)) {
     Write-Host "[WAN shim] Launch: $python (missing)"
-    Write-Error "WAN venv python not found at $python"
+    Write-Error "WAN virtual environment python not found at $python"
     exit 1
 }
 if (-not (Test-Path $engine)) { throw "Engine not found: $engine" }
