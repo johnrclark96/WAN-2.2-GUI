@@ -38,23 +38,24 @@ pip install --index-url https://download.pytorch.org/whl/cu121 \
 pip install diffusers==0.35.* accelerate==0.34.* transformers==4.44.* \
     safetensors einops omegaconf imageio imageio-ffmpeg pillow
 
-# smoke test (no models required)
-python .\wan_ps1_engine.py --dry-run --mode t2v --prompt "ok" \
-    --frames 8 --fps 24 --width 1280 --height 704 --attn auto --dtype bfloat16
+  # smoke test (no models required)
+  python .\wan_ps1_engine.py --dry-run --mode t2v --prompt "ok" \
+      --frames 8 --fps 24 --width 1280 --height 704 --attn sdpa --dtype bf16
 ```
 
 The GUI offers an **Engine** toggle between Diffusers (default) and the
-Official TI2V-5B reference script. Official mode is fixed 720p (height=704) at
-24 FPS and ignores sampler, steps, CFG, negative prompt, and attention backend
-settings.
+Official TI2V-5B reference script. Official mode locks the resolution to
+1280×704 or 704×1280 (height always 704) and runs at 24 FPS. The official
+script ignores sampler, step count, guidance scale, attention backend, frame
+rate, frame count, and the negative prompt fields.
 
 If a model directory is present you can perform a tiny real test:
 
 ```powershell
-python .\wan_ps1_engine.py --mode t2v --prompt "sunrise over the ocean" \
-    --steps 12 --cfg 6.5 --fps 12 --frames 16 --width 768 --height 432 \
-    --outdir D:\wan22\outputs \
-    --dtype bfloat16 --attn auto --seed 123
+  python .\wan_ps1_engine.py --mode t2v --prompt "sunrise over the ocean" \
+      --steps 12 --cfg 6.5 --fps 12 --frames 16 --width 768 --height 432 \
+      --outdir D:\wan22\outputs \
+      --dtype bf16 --attn sdpa --seed 123
 ```
 
 ### Recommended defaults for 16 GB GPUs

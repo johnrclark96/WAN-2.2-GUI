@@ -16,3 +16,10 @@
 - Remove unused variable from `tools/install_wan_deps.ps1` and gate flash-attn by compute capability.
 - Introduce basic engine toggle with Official command wiring and path persistence.
 - Add smoketest coverage and log parser for Official engine output.
+- Stream live logs from the Generate button and yield exit codes.
+- Gate FlashAttention on Hopper GPUs, default to SDPA, and expose precision `--dtype`.
+- Official engine path enforces height = 704, disables unsupported controls, and emits
+  `[OUTPUT]`/`[RESULT] OK` markers.
+- PowerShell runner uses `D:\wan22.cache` for Hugging Face caches and pre-creates
+  required directories.
+- Strengthen log parser tests for `[OUTPUT]`/`[RESULT]` markers and JSON `done` events.
