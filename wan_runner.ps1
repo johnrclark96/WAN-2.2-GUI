@@ -25,6 +25,14 @@ $ErrorActionPreference = "Stop"
 $python = "D:\\wan22\\venv\\Scripts\\python.exe"
 $engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
+$env:HF_HOME = "D:\\wan22.cache\\huggingface"
+$env:TRANSFORMERS_CACHE = "D:\\wan22.cache\\huggingface\\hub"
+$env:PYTHONIOENCODING = "utf-8"
+
+foreach ($d in @("D:\\wan22\\outputs", "D:\\wan22\\json")) {
+  if (!(Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null }
+}
+
 if (-not (Test-Path $python)) {
   Write-Host "[WAN shim] Launch: $python (missing)"
   Write-Error "WAN venv python not found at $python"
@@ -34,8 +42,8 @@ if (-not (Test-Path $engine)) { throw "Engine not found: $engine" }
 
 $argv = @($engine)
 if ($mode)        { $argv += @("--mode", $mode) }
-if ($prompt)      { $argv += @("--prompt", $prompt) }
-if ($neg_prompt)  { $argv += @("--neg_prompt", $neg_prompt) }
+if ($prompt)      { $argv += @("--prompt", ($prompt -replace '"', '\"')) }
+if ($neg_prompt)  { $argv += @("--neg_prompt", ($neg_prompt -replace '"', '\"')) }
 if ($sampler)     { $argv += @("--sampler", $sampler) }
 if ($steps)       { $argv += @("--steps", $steps) }
 if ($cfg)         { $argv += @("--cfg", $cfg) }

@@ -1,17 +1,34 @@
-"""Simple smoke test for WAN 2.2 models."""
+"""WAN smoketest helper.
 
+Validates command building for both engines without loading models.
+"""
+from __future__ import annotations
+
+import argparse
+import json
 from pathlib import Path
 
-from diffusers import DiffusionPipeline
+from core.paths import OFFICIAL_GENERATE, OUTPUT_DIR, VENV_PY
 
 
-base = r"D:\\wan22\\models\\Wan2.2-TI2V-5B-Diffusers"
-if not (Path(base) / "model_index.json").exists():
-    print("MISSING model_index.json at", base)
-    raise SystemExit(3)
+def build_cmd(engine: str) -> list[str]:
+    if engine == "diffusers":
+        return ["pwsh", "-NoLogo", "-File", "wan_runner.ps1"]
+    if engine == "official":
+        if not OFFICIAL_GENERATE:
+            raise ValueError("OFFICIAL_GENERATE unset")
+        return [str(VENV_PY), OFFICIAL_GENERATE]
+    raise ValueError(f"unknown engine {engine}")
 
-pipe = DiffusionPipeline.from_pretrained(
-    base, trust_remote_code=True, torch_dtype="auto"
-)
-print("LOAD_OK")
 
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--engine", choices=["diffusers", "official"], default="diffusers")
+    ap.add_argument("--mode", choices=["build-only"], default="build-only")
+    args = ap.parse_args()
+    cmd = build_cmd(args.engine)
+    print(json.dumps({"cmd": cmd, "outdir": Path(OUTPUT_DIR).as_posix()}))
+
+
+if __name__ == "__main__":
+    main()

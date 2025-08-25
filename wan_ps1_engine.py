@@ -9,6 +9,7 @@ import time
 import traceback
 from contextlib import nullcontext
 from pathlib import Path
+from core.paths import OUTPUT_DIR, MODELS_DIR
 from typing import Any, Dict, List
 
 torch: Any = None
@@ -248,10 +249,10 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=432)
     parser.add_argument("--batch_count", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--outdir", default=r"D:\\wan22\\outputs")
+    parser.add_argument("--outdir", default=OUTPUT_DIR.as_posix())
     parser.add_argument(
         "--model_dir",
-        default=r"D:\\wan22\\models\\Wan2.2-TI2V-5B-Diffusers",
+        default=(MODELS_DIR / "Wan2.2-TI2V-5B-Diffusers").as_posix(),
     )
     parser.add_argument(
         "--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16"
@@ -265,7 +266,7 @@ def main() -> int:
     cfg = vars(args).copy()
 
     if args.dry_run:
-        outdir = Path(args.outdir or r"D:\\wan22\\outputs")
+        outdir = Path(args.outdir or OUTPUT_DIR)
         outdir.mkdir(parents=True, exist_ok=True)
         sidecar = outdir / f"dryrun_{int(time.time()*1000)}.json"
         data = {"ok": True, "config": cfg}
@@ -276,7 +277,7 @@ def main() -> int:
     try:
         validate(args)
     except Exception as e:
-        outdir = Path(args.outdir or r"D:\\wan22\\outputs")
+        outdir = Path(args.outdir or OUTPUT_DIR)
         outdir.mkdir(parents=True, exist_ok=True)
         sidecar = outdir / f"error_{int(time.time()*1000)}.json"
         err = {
