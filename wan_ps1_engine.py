@@ -264,16 +264,15 @@ def main() -> int:
     parser.add_argument("--image", default="")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    cfg = vars(args).copy()
-
     if args.dry_run:
-        outdir = Path(args.outdir or OUTPUT_DIR)
-        outdir.mkdir(parents=True, exist_ok=True)
-        sidecar = outdir / f"dryrun_{int(time.time()*1000)}.json"
-        data = {"ok": True, "config": cfg}
-        save_sidecar(sidecar, data)
-        print("[RESULT] OK")
+        print(
+            f"[WAN shim] Dry run: mode={args.mode} "
+            f"frames={args.frames} width={args.width} height={args.height}"
+        )
+        print("[RESULT] OK dry-run")
         return 0
+
+    cfg = vars(args).copy()
 
     try:
         validate(args)
@@ -301,22 +300,22 @@ def main() -> int:
         outputs = gen(args)
     except Exception as e:
         sidecar = Path(args.outdir) / f"error_{int(time.time()*1000)}.json"
-        data = {
+        gen_err: Dict[str, Any] = {
             "error": f"{type(e).__name__}: {e}",
             "tb": traceback.format_exc(),
             "config": cfg,
         }
-        save_sidecar(sidecar, data)
-        print(f"[RESULT] FAIL GENERATION {data['error']}")
+        save_sidecar(sidecar, gen_err)
+        print(f"[RESULT] FAIL GENERATION {gen_err['error']}")
         return 1
 
     for out in outputs[:1]:
         print(f"[OUTPUT] {Path(out).resolve()}")
 
     sidecar = Path(args.outdir) / f"result_{int(time.time()*1000)}.json"
-    data = {"ok": True, "outputs": outputs, "config": cfg}
-    save_sidecar(sidecar, data)
-    print("[RESULT] OK")
+    result_data: Dict[str, Any] = {"ok": True, "outputs": outputs, "config": cfg}
+    save_sidecar(sidecar, result_data)
+    print("[RESULT] OK done")
     return 0
 
 
