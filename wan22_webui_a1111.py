@@ -11,11 +11,9 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import json
-from collections import deque
-from datetime import datetime
 from pathlib import Path
-from typing import List, Generator, Any
+from typing import List, Generator
+
 
 from core import paths
 
@@ -60,11 +58,10 @@ def estimate_mem(width: int, height: int, frames: int, micro: int, batch: int) -
 
 
 def run_cmd(engine: str, **kw) -> Generator[str, None, None]:
-    """Launch the selected engine and stream stdout as it arrives."""
     mode = kw["mode"]
     prompt = kw.get("prompt", "")
-    neg = kw.get("neg_prompt", "")
     image = kw.get("image")
+
 
     # unified input validation
     prompt_str = (prompt or "").strip()
