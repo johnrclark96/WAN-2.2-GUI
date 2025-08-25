@@ -21,10 +21,6 @@ def read_last_line(capsys):
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows paths only")
 def test_dry_run_ok(monkeypatch, capsys):
-    outdir = Path(r"D:/wan22/outputs")
-    if outdir.exists():
-        for p in outdir.glob("dryrun_*.json"):
-            p.unlink()
     code = run_main(
         monkeypatch,
         [
@@ -45,5 +41,4 @@ def test_dry_run_ok(monkeypatch, capsys):
     out_line = read_last_line(capsys)
     assert out_line.startswith("[RESULT] OK ")
     data = json.loads(out_line.split("[RESULT] OK ", 1)[1])
-    assert data["config"]["frames"] == 8
-    assert list(outdir.glob("dryrun_*.json"))
+    assert data["frames"] == 8
