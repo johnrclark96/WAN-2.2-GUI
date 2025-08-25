@@ -10,6 +10,7 @@ gui = pytest.importorskip("wan22_webui_a1111")  # noqa: E402
 
 def test_model_dir_exists_check(tmp_path):
     gen = gui.run_cmd(
+        engine="diffusers",
         mode="t2v",
         prompt="ok",
         neg_prompt="",

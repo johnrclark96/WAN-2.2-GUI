@@ -24,8 +24,15 @@ import gradio as gr
 
 APP_TITLE = "WAN 2.2 GUI"
 
-ROOT = Path(__file__).resolve().parent
-RUNNER = ROOT / "wan_runner.ps1"
+SAMPLERS = [
+    "unipc",
+    "ddim",
+    "euler",
+    "euler_a",
+    "heun",
+    "dpmpp_2m",
+    "dpmpp_2m_sde",
+]
 
 DEFAULT_MODEL_DIR = (paths.MODELS_DIR / "Wan2.2-TI2V-5B-Diffusers").as_posix()
 DEFAULT_OUTDIR = paths.OUTPUT_DIR.as_posix()
@@ -57,7 +64,7 @@ def safe_float(value: Any, default: float, minimum: float | None = None) -> floa
 
 def build_args(values: dict) -> List[str]:
     """Build the PowerShell invocation to the engine shim with CLI args."""
-    args: List[str] = ["pwsh", "-NoLogo", "-File", RUNNER.as_posix()]
+    args: List[str] = ["pwsh", "-NoLogo", "-File", paths.PS1_ENGINE.as_posix()]
     order = [
         "mode", "prompt", "neg_prompt", "sampler", "steps", "cfg", "seed",
         "fps", "frames", "width", "height", "batch_count", "batch_size",
@@ -114,7 +121,7 @@ def stream_run(cmd: List[str]) -> Generator[str, None, None]:
     yield f"[exit] code={code}"
 
 
-def run_cmd(engine: str, **kw) -> Generator[str, None, None]:
+def run_cmd(engine: str = "diffusers", **kw) -> Generator[str, None, None]:
     mode = kw["mode"]
     prompt = kw.get("prompt", "")
     image = kw.get("image")
@@ -147,14 +154,16 @@ def run_cmd(engine: str, **kw) -> Generator[str, None, None]:
     kw.update({"width": w, "height": h, "frames": frames})
 
     if engine == "official":
-        if not paths.OFFICIAL_GENERATE or not Path(paths.OFFICIAL_GENERATE).exists():
+        if not paths.PY_EXE.exists():
+            raise gr.Error("Set PY_EXE path in the Paths tab.")
+        if not paths.OFFICIAL_GENERATE or not paths.OFFICIAL_GENERATE.exists():
             raise gr.Error("Set OFFICIAL_GENERATE path in the Paths tab.")
         if h != 704:
             raise gr.Error("Official engine only supports height=704 (720p).")
         size = f"{w}*{h}"
         cmd: List[str] = [
-            paths.VENV_PY.as_posix(),
-            paths.OFFICIAL_GENERATE,
+            paths.PY_EXE.as_posix(),
+            paths.OFFICIAL_GENERATE.as_posix(),
             "--task",
             "ti2v-5B",
             "--prompt",
@@ -175,6 +184,11 @@ def run_cmd(engine: str, **kw) -> Generator[str, None, None]:
         except Exception:
             pass
     else:
+        if not paths.PS1_ENGINE.exists():
+            raise gr.Error("Set PS1_ENGINE path in the Paths tab.")
+        sampler = kw.get("sampler", "unipc")
+        if sampler not in SAMPLERS:
+            raise gr.Error(f"invalid sampler: {sampler}")
         # diffusers engine via PowerShell runner
         args = dict(kw)
         args.update({"mode": mode})
@@ -187,38 +201,66 @@ def build_ui():
     with gr.Blocks(title=APP_TITLE) as demo:
         gr.Markdown(f"## {APP_TITLE}", elem_id="app-title")
 
-        engine = gr.Radio(["diffusers", "official"], value="diffusers", label="Engine")
+        with gr.Tabs():
+            with gr.Tab("Generate"):
+                engine = gr.Radio(["diffusers", "official"], value="diffusers", label="Engine")
 
-        with gr.Row():
-            prompt = gr.Textbox(label="Prompt", lines=3)
-            neg_prompt = gr.Textbox(label="Negative Prompt", lines=2)
+                with gr.Row():
+                    prompt = gr.Textbox(label="Prompt", lines=3)
+                    neg_prompt = gr.Textbox(label="Negative Prompt", lines=2)
 
-        with gr.Row():
-            sampler = gr.Textbox(value="euler", label="Sampler")
-            steps = gr.Slider(1, 50, value=20, step=1, label="Steps")
-            cfg = gr.Slider(1.0, 20.0, value=7.0, step=0.5, label="CFG")
-            seed = gr.Number(value=-1, label="Seed")
+                with gr.Row():
+                    sampler = gr.Dropdown(
+                        SAMPLERS,
+                        value="unipc",
+                        label="Sampler",
+                        info="Only Diffusers schedulers validated with WAN.",
+                    )
+                    steps = gr.Slider(1, 50, value=20, step=1, label="Steps")
+                    cfg = gr.Slider(1.0, 20.0, value=7.0, step=0.5, label="CFG")
+                    seed = gr.Number(value=-1, label="Seed")
 
-        with gr.Row():
-            fps = gr.Slider(1, 30, value=24, step=1, label="FPS")
-            frames = gr.Slider(1, 49, value=9, step=1, label="Frames")
-            width = gr.Number(value=1280, label="Width")
-            height = gr.Number(value=704, label="Height")
+                sampler_note = gr.Markdown("Sampler is a Diffusers-only setting.", visible=False)
 
-        with gr.Row():
-            batch_count = gr.Number(value=1, label="Batch Count")
-            batch_size = gr.Number(value=1, label="Batch Size")
-            dtype = gr.Dropdown(["fp16", "bf16", "fp32"], value="bf16", label="DType")
-            attn = gr.Dropdown(["sdpa", "flash-attn"], value="sdpa", label="Attention")
+                with gr.Row():
+                    fps = gr.Slider(1, 30, value=24, step=1, label="FPS")
+                    frames = gr.Slider(1, 49, value=9, step=1, label="Frames")
+                    width = gr.Number(value=1280, label="Width")
+                    height = gr.Number(value=704, label="Height")
 
-        with gr.Row():
-            model_dir = gr.Textbox(value=DEFAULT_MODEL_DIR, label="Model Dir")
-            outdir = gr.Textbox(value=DEFAULT_OUTDIR, label="Output Dir")
+                with gr.Row():
+                    batch_count = gr.Number(value=1, label="Batch Count")
+                    batch_size = gr.Number(value=1, label="Batch Size")
+                    dtype = gr.Dropdown(["fp16", "bf16", "fp32"], value="bf16", label="DType")
+                    attn = gr.Dropdown(["sdpa", "flash-attn"], value="sdpa", label="Attention")
 
-        image = gr.Image(label="Init Image", type="filepath")
+                with gr.Row():
+                    model_dir = gr.Textbox(value=DEFAULT_MODEL_DIR, label="Model Dir")
+                    outdir = gr.Textbox(value=DEFAULT_OUTDIR, label="Output Dir")
 
-        run = gr.Button("Generate")
-        log = gr.Textbox(label="Log", lines=15)
+                image = gr.Image(label="Init Image", type="filepath")
+
+                run = gr.Button("Generate")
+                log = gr.Textbox(label="Log", lines=15)
+
+            with gr.Tab("Paths"):
+                py_exe = gr.Textbox(paths.PY_EXE.as_posix(), label="PY_EXE")
+                ps1_engine = gr.Textbox(paths.PS1_ENGINE.as_posix(), label="PS1_ENGINE")
+                official = gr.Textbox(paths.OFFICIAL_GENERATE.as_posix(), label="OFFICIAL_GENERATE")
+                save_paths = gr.Button("Save Paths")
+
+                def on_save(py: str, ps1: str, off: str) -> None:
+                    paths.save_config({
+                        "PY_EXE": py,
+                        "PS1_ENGINE": ps1,
+                        "OFFICIAL_GENERATE": off,
+                    })
+                    paths.PY_EXE = Path(py)
+                    paths.PS1_ENGINE = Path(ps1)
+                    paths.OFFICIAL_GENERATE = Path(off)
+                    gr.Info("paths saved")
+
+                save_paths.click(on_save, inputs=[py_exe, ps1_engine, official], outputs=[])
 
         def on_run(
             eng,
@@ -256,8 +298,14 @@ def build_ui():
             frames_v = safe_int(frames_v, 9, 1)
             if (frames_v - 1) % 4 != 0:
                 frames_v = (frames_v - 1) // 4 * 4 + 1
-            width_v = snap32(safe_int(width_v, 1280, 32))
-            height_v = snap32(safe_int(height_v, 704, 32))
+            orig_w = safe_int(width_v, 1280, 32)
+            orig_h = safe_int(height_v, 704, 32)
+            width_v = snap32(orig_w)
+            height_v = snap32(orig_h)
+            if width_v != orig_w:
+                gr.Warning(f"Snapped {orig_w} → {width_v}")
+            if height_v != orig_h:
+                gr.Warning(f"Snapped {orig_h} → {height_v}")
             batch_count_v = safe_int(batch_count_v, 1, 1)
             batch_size_v = safe_int(batch_size_v, 1, 1)
             try:
@@ -318,6 +366,15 @@ def build_ui():
                 image,
             ],
             outputs=log,
+        )
+
+        engine.change(
+            lambda e: (
+                gr.Dropdown.update(interactive=e == "diffusers"),
+                gr.Markdown.update(visible=e == "official"),
+            ),
+            inputs=engine,
+            outputs=[sampler, sampler_note],
         )
 
     return demo
