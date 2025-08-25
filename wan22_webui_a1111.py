@@ -66,10 +66,25 @@ def run_cmd(engine: str, **kw):
 
     if frames < 1 or kw["steps"] < 1 or kw["batch_count"] < 1 or kw["batch_size"] < 1:
         raise gr.Error("steps, frames, batch_count and batch_size must be >=1")
-    if not prompt.strip() and not image:
-        raise gr.Error("prompt required when no image provided")
-    if image and not Path(image).exists():
-        raise gr.Error(f"image not found: {image}")
+# ---- unified validation (replaces the merge conflict) ----
+prompt_str = (prompt or "").strip()
+image_path = image or ""
+
+# General sanity checks (apply regardless of mode)
+if not prompt_str and not image_path:
+    raise gr.Error("Either a prompt or an image is required.")
+if image_path and not Path(image_path).exists():
+    raise gr.Error(f"Image not found: {image_path}")
+
+# Mode-specific checks (only if a mode selector is present)
+# If your UI no longer exposes a 'mode' selector and you derive it automatically,
+# leave these in place anyway—they will still be correct given the derived mode.
+if mode in {"t2v", "ti2v", "t2i"} and not prompt_str:
+    raise gr.Error("Prompt is required for text modes (t2v, ti2v, t2i).")
+if mode in {"i2v", "ti2v"} and not image_path:
+    raise gr.Error("Image is required for image modes (i2v, ti2v).")
+# ---- end unified validation ----
+
 
     if engine == "official":
         if mode == "i2v":
@@ -265,36 +280,66 @@ def build_ui():
             outputs=[sampler, steps, cfg, fps, frames, attn, neg_prompt, batch_size],
         )
 
-        def on_run(
-            eng,
-            prompt_v,
-            neg_v,
-            sampler_v,
-            steps_v,
-            cfg_v,
-            seed_v,
-            fps_v,
-            frames_v,
-            width_v,
-            height_v,
-            batch_count_v,
-            batch_size_v,
-            outdir_v,
-            model_dir_v,
-            dtype_v,
-            attn_v,
-            image_v,
-        ):
-            mode_v = "ti2v" if prompt_v and image_v else "i2v" if image_v else "t2v"
-            if eng == "official" and mode_v == "i2v":
-                raise gr.Error("Use the diffusers engine for image-to-video.")
-            gr.Info(f"mode={mode_v}")
+def on_run(
+    eng,
+    prompt_v,
+    neg_v,
+    sampler_v,
+    steps_v,
+    cfg_v,
+    seed_v,
+    fps_v,
+    frames_v,
+    width_v,
+    height_v,
+    batch_count_v,
+    batch_size_v,
+    outdir_v,
+    model_dir_v,
+    dtype_v,
+    attn_v,
+    image_v,
+):
+    # Human-readable mode for UI feedback
+    mode_v = "ti2v" if (prompt_v and image_v) else ("i2v" if image_v else "t2v")
 
-            cli_mode = "t2i" if int(frames_v) == 1 else "t2v"
+    # Official engine does not support pure image-to-video in this GUI
+    if eng == "official" and mode_v == "i2v":
+        raise gr.Error("Use the diffusers engine for image-to-video.")
 
-            for line in run_cmd(
-                eng,
-                mode=cli_mode,
+    gr.Info(f"mode={mode_v}")
+
+    # CLI-safe mode actually sent to the runner
+    # - Diffusers CLI only supports "t2v" and "t2i"
+    # - Official branch should receive the user's intended mode
+    if eng == "diffusers":
+        cli_mode = "t2i" if int(frames_v) == 1 else "t2v"
+    else:  # eng == "official"
+        cli_mode = mode_v
+
+    for line in run_cmd(
+        eng,
+        mode=cli_mode,
+        prompt=prompt_v,
+        neg_prompt=neg_v,
+        sampler=sampler_v,
+        steps=steps_v,
+        cfg=cfg_v,
+        seed=seed_v,
+        fps=fps_v,
+        frames=frames_v,
+        width=width_v,
+        height=height_v,
+        batch_count=batch_count_v,
+        batch_size=batch_size_v,
+        outdir=outdir_v,
+        model_dir=model_dir_v,
+        dtype=dtype_v,
+        attn=attn_v,
+        image=image_v,
+    ):
+        yield line
+
                 prompt=prompt_v,
                 neg_prompt=neg_v,
                 sampler=sampler_v,

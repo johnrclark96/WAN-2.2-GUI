@@ -19,7 +19,7 @@
 - Stream live logs from the Generate button and yield exit codes.
 - Gate FlashAttention on Hopper GPUs, default to SDPA, and expose precision `--dtype`.
 - Official engine path enforces height = 704, disables unsupported controls, and emits
-  `[OUTPUT]`/`[RESULT] OK` markers.
+  `[OUTPUT]`/`[RESULT] OK done` markers.
 - PowerShell runner uses `D:\wan22\.cache` for Hugging Face caches and pre-creates
   required directories.
 - Strengthen log parser tests for `[OUTPUT]`/`[RESULT]` markers and JSON `done` events.

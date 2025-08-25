@@ -273,7 +273,7 @@ def main() -> int:
             "height": int(args.height),
         }
         print("[WAN shim] Dry run: " + json.dumps(payload, separators=(",", ":")))
-        print("[RESULT] OK " + json.dumps(payload, separators=(",", ":")))
+        print("[RESULT] OK done" + json.dumps(payload, separators=(",", ":")))
         return 0
 
     cfg = vars(args).copy()
@@ -319,7 +319,9 @@ def main() -> int:
     sidecar = Path(args.outdir) / f"result_{int(time.time()*1000)}.json"
     result_data: Dict[str, Any] = {"ok": True, "outputs": outputs, "config": cfg}
     save_sidecar(sidecar, result_data)
-    print("[RESULT] OK")
+
+    print("[RESULT] OK done")
+
     return 0
 
 
