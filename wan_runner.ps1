@@ -14,8 +14,8 @@ param(
     [int]$batch_size = 1,
     [string]$outdir = "D:/wan22/outputs",
     [string]$model_dir = "D:/wan22/models/Wan2.2-TI2V-5B-Diffusers",
-    [string]$dtype = "bfloat16",
-    [string]$attn = "auto",
+    [string]$dtype = "bf16",
+    [string]$attn = "sdpa",
     [string]$image,
     [switch]$dry_run
 )
@@ -25,15 +25,15 @@ $ErrorActionPreference = "Stop"
 $python = "D:\\wan22\\venv\\Scripts\\python.exe"
 $engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
-$env:HF_HOME = "D:\\wan22\\.cache\\huggingface"
-$env:TRANSFORMERS_CACHE = "D:\\wan22\\.cache\\huggingface\\hub"
+$env:HF_HOME = "D:\\wan22.cache\\huggingface"
+$env:TRANSFORMERS_CACHE = "D:\\wan22.cache\\huggingface\\hub"
 $env:PYTHONIOENCODING = "utf-8"
 
 foreach ($d in @(
     "D:\\wan22\\outputs",
     "D:\\wan22\\json",
-    "D:\\wan22\\.cache\\huggingface",
-    "D:\\wan22\\.cache\\huggingface\\hub"
+    "D:\\wan22.cache\\huggingface",
+    "D:\\wan22.cache\\huggingface\\hub"
   )) {
   if (!(Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null }
 }

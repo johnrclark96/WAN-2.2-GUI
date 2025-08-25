@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-from collections import deque
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import List
 
@@ -13,7 +14,6 @@ from core import paths
 
 import gradio as gr
 
-QUEUE_WARNING_SHOWN = False
 
 ROOT = Path(__file__).resolve().parent
 RUNNER = ROOT / "wan_runner.ps1"
@@ -46,58 +46,60 @@ def build_args(values: dict) -> List[str]:
     return args
 
 
+def estimate_mem(width: int, height: int, frames: int, micro: int, batch: int) -> float:
+    return width * height * frames * micro * batch / 1024 ** 3 * 2e-6
+
+
 def run_cmd(engine: str, **kw):
     mode = kw["mode"]
-    prompt = kw["prompt"] or ""
-    neg = kw["neg_prompt"] or ""
+    prompt = kw.get("prompt", "")
+    neg = kw.get("neg_prompt", "")
     image = kw.get("image")
 
-    kw["width"] = snap32(int(kw["width"]))
-    kw["height"] = snap32(int(kw["height"]))
+    req_w = snap32(int(kw["width"]))
+    req_h = snap32(int(kw["height"]))
+    req_frames = int(kw["frames"])
+    if (req_frames - 1) % 4 != 0:
+        req_frames = (req_frames - 1) // 4 * 4 + 1
+    w, h, frames = req_w, req_h, req_frames
+    kw.update({"width": w, "height": h, "frames": frames})
 
-    if kw["frames"] < 1 or kw["steps"] < 1 or kw["batch_count"] < 1 or kw["batch_size"] < 1:
+    if frames < 1 or kw["steps"] < 1 or kw["batch_count"] < 1 or kw["batch_size"] < 1:
         raise gr.Error("steps, frames, batch_count and batch_size must be >=1")
     if mode in {"t2v", "ti2v", "t2i"} and not prompt.strip():
         raise gr.Error("prompt required for text modes")
     if mode in {"i2v", "ti2v"} and not image:
         raise gr.Error("image required for image modes")
-    if engine == "official" and mode in {"t2i", "i2v"}:
-        raise gr.Error("Use Diffusers for this mode.")
-    if engine == "diffusers" and mode == "t2i":
-        kw["frames"] = 1
 
     if engine == "official":
+        if mode == "i2v":
+            raise gr.Error("Use the diffusers engine for image-to-video.")
         if not paths.OFFICIAL_GENERATE or not Path(paths.OFFICIAL_GENERATE).exists():
             raise gr.Error("Set OFFICIAL_GENERATE path in Paths tab.")
-        w = kw["width"]
-        h = kw["height"]
-        w = snap32(int(w))
-        h = snap32(int(h))
         if h != 704:
             raise gr.Error("Official engine requires height=704. Try 1280x704 or 704x1280.")
-        size = f"{w}*{h}"
-        task = "ti2v-5B"
         cmd = [
             paths.VENV_PY.as_posix(),
             paths.OFFICIAL_GENERATE,
             "--task",
-            task,
+            "ti2v-5B",
             "--prompt",
             prompt,
             "--ckpt_dir",
             paths.CKPT_TI2V_5B.as_posix(),
             "--size",
-            size,
+            f"{w}*{h}",
         ]
         if mode == "ti2v" and image:
-            cmd.extend(["--image", str(Path(image).resolve())])
+            cmd += ["--image", str(Path(image).resolve())]
         try:
             import torch
             free, _ = torch.cuda.mem_get_info()  # type: ignore[attr-defined]
-            if free / 1024**3 < 24:
-                cmd.extend(["--offload_model", "True", "--convert_model_dtype", "--t5_cpu"])
+            if free / 1024 ** 3 < 24:
+                cmd += ["--offload_model", "True", "--convert_model_dtype", "--t5_cpu"]
         except Exception:
             pass
+        effective_line = None
     else:
         if not Path(kw["model_dir"]).exists():
             raise gr.Error(f"model dir not found: {kw['model_dir']}")
@@ -105,13 +107,68 @@ def run_cmd(engine: str, **kw):
         if attn_mode == "flash-attn":
             try:
                 import torch
-                cap = torch.cuda.get_device_capability()  # type: ignore[attr-defined]
-                if cap[0] < 9:
-                    raise gr.Error("FlashAttention-3 requires Hopper/SM90+; using SDPA on Ada.")
-            except gr.Error:
-                raise
+                major, _ = torch.cuda.get_device_capability()  # type: ignore[attr-defined]
+                if major < 9:
+                    gr.Warning("FlashAttention v3 requires Hopper; using sdpa")
+                    attn_mode = "sdpa"
             except Exception:
-                pass
+                gr.Warning("FlashAttention v3 requires Hopper; using sdpa")
+                attn_mode = "sdpa"
+
+        micro = 128
+        batch_size = int(kw["batch_size"])
+        free_gb = total_gb = 0.0
+        try:
+            import torch
+            free, total = torch.cuda.mem_get_info()  # type: ignore[attr-defined]
+            free_gb, total_gb = free / 1024 ** 3, total / 1024 ** 3
+        except Exception:
+            free_gb = 32.0
+            total_gb = free_gb
+        req = estimate_mem(w, h, frames, micro, batch_size)
+        while req > free_gb and micro > 32:
+            micro //= 2
+            req = estimate_mem(w, h, frames, micro, batch_size)
+        while req > free_gb and frames > 1:
+            frames = max(1, frames - 4)
+            if (frames - 1) % 4 != 0:
+                frames = (frames - 1) // 4 * 4 + 1
+            req = estimate_mem(w, h, frames, micro, batch_size)
+        aspect = w / h
+        while req > free_gb and w > 32 and h > 32:
+            w = snap32(int(w * 0.9))
+            h = snap32(int(w / aspect))
+            req = estimate_mem(w, h, frames, micro, batch_size)
+        kw.update({"width": w, "height": h, "frames": frames})
+        effective = {
+            "width": w,
+            "height": h,
+            "frames": frames,
+            "micro_batch": micro,
+            "batch_size": batch_size,
+        }
+        paths.JSON_DIR.mkdir(parents=True, exist_ok=True)
+        sidecar = paths.JSON_DIR / f"WAN22_{datetime.now():%Y%m%d_%H%M%S}.json"
+        requested = {
+            "width": req_w,
+            "height": req_h,
+            "frames": req_frames,
+            "micro_batch": 128,
+            "batch_size": batch_size,
+        }
+        with sidecar.open("w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "requested": requested,
+                    "effective": effective,
+                    "memory": {"free_gb": free_gb, "total_gb": total_gb},
+                },
+                fh,
+                indent=2,
+            )
+        effective_line = (
+            f"effective settings: width={w} height={h} frames={frames} micro_batch={micro} batch_size={batch_size}"
+        )
         args = {
             "mode": mode,
             "prompt": prompt,
@@ -121,11 +178,11 @@ def run_cmd(engine: str, **kw):
             "cfg": kw["cfg"],
             "seed": kw["seed"],
             "fps": kw["fps"],
-            "frames": kw["frames"],
-            "width": kw["width"],
-            "height": kw["height"],
+            "frames": frames,
+            "width": w,
+            "height": h,
             "batch_count": kw["batch_count"],
-            "batch_size": kw["batch_size"],
+            "batch_size": batch_size,
             "outdir": kw["outdir"],
             "model_dir": kw["model_dir"],
             "dtype": kw["dtype"],
@@ -135,22 +192,14 @@ def run_cmd(engine: str, **kw):
         cmd = build_args(args)
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    lines = deque(maxlen=200)
     assert proc.stdout is not None
-    global QUEUE_WARNING_SHOWN
+    yield "launch: " + " ".join(cmd)
+    if effective_line:
+        yield effective_line
     for line in proc.stdout:
-        text = line.rstrip()
-        if (
-            not QUEUE_WARNING_SHOWN
-            and "Queue objects should only be shared" in text
-        ):
-            lines.append("Streaming updated to safe subprocess reader (Windows).")
-            QUEUE_WARNING_SHOWN = True
-        lines.append(text)
-        yield "\n".join(lines)
+        yield line.rstrip()
     proc.wait()
-    lines.append(f"[exit {proc.returncode}]")
-    yield "\n".join(lines)
+    yield f"[exit {proc.returncode}]"
 
 
 def build_ui():
@@ -158,7 +207,6 @@ def build_ui():
         with gr.Tabs():
             with gr.Tab("Generate"):
                 engine = gr.Radio(["diffusers", "official"], value="diffusers", label="Engine")
-                mode = gr.Dropdown(["t2v", "t2i", "i2v", "ti2v"], value="t2v", label="Mode")
                 prompt = gr.Textbox(label="Prompt", lines=3)
                 neg_prompt = gr.Textbox(label="Negative Prompt", lines=2)
                 image = gr.Image(type="filepath", label="Init Image")
@@ -179,7 +227,7 @@ def build_ui():
                 batch_size = gr.Number(value=1, label="Batch Size")
                 model_dir = gr.Textbox(value=DEFAULT_MODEL_DIR, label="Model Dir")
                 outdir = gr.Textbox(value=DEFAULT_OUTDIR, label="Output Dir")
-                dtype = gr.Dropdown(["bfloat16", "float16", "float32"], value="bfloat16", label="DType")
+                dtype = gr.Dropdown(["bf16", "fp16", "fp32"], value="bf16", label="DType")
                 attn = gr.Dropdown(["sdpa", "flash-attn"], value="sdpa", label="Attention")
                 run = gr.Button("Generate")
                 log = gr.Textbox(label="Log", lines=20)
@@ -217,28 +265,58 @@ def build_ui():
             outputs=[sampler, steps, cfg, fps, frames, attn, neg_prompt, batch_size],
         )
 
+        def on_run(eng, prompt_v, neg_v, sampler_v, steps_v, cfg_v, seed_v, fps_v, frames_v, width_v, height_v, batch_count_v, batch_size_v, outdir_v, model_dir_v, dtype_v, attn_v, image_v):
+            mode_v = (
+                "ti2v" if prompt_v and image_v else "i2v" if image_v else "t2v"
+            )
+            if eng == "official" and mode_v == "i2v":
+                raise gr.Error("Use the diffusers engine for image-to-video.")
+            gr.Info(f"mode={mode_v}")
+            for line in run_cmd(
+                eng,
+                mode=mode_v,
+                prompt=prompt_v,
+                neg_prompt=neg_v,
+                sampler=sampler_v,
+                steps=steps_v,
+                cfg=cfg_v,
+                seed=seed_v,
+                fps=fps_v,
+                frames=frames_v,
+                width=width_v,
+                height=height_v,
+                batch_count=batch_count_v,
+                batch_size=batch_size_v,
+                outdir=outdir_v,
+                model_dir=model_dir_v,
+                dtype=dtype_v,
+                attn=attn_v,
+                image=image_v,
+            ):
+                yield line
+
         run.click(
-            lambda eng, *vals: run_cmd(eng, **{
-                "mode": vals[0],
-                "prompt": vals[1],
-                "neg_prompt": vals[2],
-                "sampler": vals[3],
-                "steps": vals[4],
-                "cfg": vals[5],
-                "seed": vals[6],
-                "fps": vals[7],
-                "frames": vals[8],
-                "width": vals[9],
-                "height": vals[10],
-                "batch_count": vals[11],
-                "batch_size": vals[12],
-                "outdir": vals[13],
-                "model_dir": vals[14],
-                "dtype": vals[15],
-                "attn": vals[16],
-                "image": vals[17],
-            }),
-            inputs=[engine, mode, prompt, neg_prompt, sampler, steps, cfg, seed, fps, frames, width, height, batch_count, batch_size, outdir, model_dir, dtype, attn, image],
+            on_run,
+            inputs=[
+                engine,
+                prompt,
+                neg_prompt,
+                sampler,
+                steps,
+                cfg,
+                seed,
+                fps,
+                frames,
+                width,
+                height,
+                batch_count,
+                batch_size,
+                outdir,
+                model_dir,
+                dtype,
+                attn,
+                image,
+            ],
             outputs=log,
         )
     return demo

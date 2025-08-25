@@ -25,8 +25,8 @@ def test_model_dir_exists_check(tmp_path):
         batch_size=1,
         outdir=str(tmp_path),
         model_dir=str(tmp_path / "missing"),
-        dtype="bfloat16",
-        attn="auto",
+        dtype="bf16",
+        attn="sdpa",
         image=None,
     )
     with pytest.raises(gui.gr.Error):

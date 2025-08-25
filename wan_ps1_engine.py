@@ -44,23 +44,22 @@ def attention_context(pref: str):
     try:
         from torch.nn.attention import SDPBackend, sdpa_kernel  # type: ignore
     except Exception:  # pragma: no cover - torch absent
-        return "math", nullcontext()
+        return "sdpa", nullcontext()
 
-    if pref in {"auto", "flash"}:
+    backend = SDPBackend.EFFICIENT_ATTENTION
+    name = "sdpa"
+    if pref == "flash-attn":
         try:
-            return "flash", sdpa_kernel(SDPBackend.FLASH_ATTENTION)
+            import torch
+            major, _ = torch.cuda.get_device_capability()  # type: ignore[attr-defined]
+            if major >= 9:
+                backend = SDPBackend.FLASH_ATTENTION
+                name = "flash-attn"
+            else:
+                print("[WARN] FlashAttention v3 requires Hopper; using sdpa")
         except Exception:
-            if pref == "flash":
-                raise
-    if pref in {"auto", "sdpa"}:
-        try:
-            return "sdpa", sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)
-        except Exception:
-            pass
-    try:
-        return "math", sdpa_kernel(SDPBackend.MATH)
-    except Exception:
-        return "math", nullcontext()
+            print("[WARN] FlashAttention v3 requires Hopper; using sdpa")
+    return name, sdpa_kernel(backend)
 
 
 def save_sidecar(path: Path, data: Dict[str, Any]) -> None:
@@ -118,6 +117,8 @@ def validate(p: argparse.Namespace) -> None:
     p.height = snap32(p.height)
     if p.frames < 1:
         p.frames = 1
+    if (p.frames - 1) % 4 != 0:
+        p.frames = (p.frames - 1) // 4 * 4 + 1
     if p.steps < 1:
         p.steps = 1
     if p.batch_count < 1 or p.batch_size < 1:
@@ -145,9 +146,9 @@ def load_pipeline(model_dir: str, dtype: str):  # pragma: no cover - heavy
         import torch as _torch
         torch = _torch
     torch_dtype = {
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-        "float32": torch.float32,
+        "bf16": torch.bfloat16,
+        "fp16": torch.float16,
+        "fp32": torch.float32,
     }[dtype]
     vae = AutoencoderKLWan.from_pretrained(
         model_dir, subfolder="vae", torch_dtype=torch.float32
@@ -255,10 +256,10 @@ def main() -> int:
         default=(MODELS_DIR / "Wan2.2-TI2V-5B-Diffusers").as_posix(),
     )
     parser.add_argument(
-        "--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16"
+        "--dtype", choices=["bf16", "fp16", "fp32"], default="bf16"
     )
     parser.add_argument(
-        "--attn", choices=["auto", "flash", "sdpa", "math"], default="auto"
+        "--attn", choices=["sdpa", "flash-attn"], default="sdpa"
     )
     parser.add_argument("--image", default="")
     parser.add_argument("--dry-run", action="store_true")
@@ -271,7 +272,7 @@ def main() -> int:
         sidecar = outdir / f"dryrun_{int(time.time()*1000)}.json"
         data = {"ok": True, "config": cfg}
         save_sidecar(sidecar, data)
-        print("[RESULT] OK", json.dumps(data))
+        print("[RESULT] OK")
         return 0
 
     try:
@@ -286,7 +287,7 @@ def main() -> int:
             "config": cfg,
         }
         save_sidecar(sidecar, err)
-        print("[RESULT] FAIL VALIDATION", json.dumps(err))
+        print(f"[RESULT] FAIL VALIDATION {err['error']}")
         return 1
 
     if args.mode == "t2i":
@@ -306,7 +307,7 @@ def main() -> int:
             "config": cfg,
         }
         save_sidecar(sidecar, data)
-        print("[RESULT] FAIL GENERATION", json.dumps(data))
+        print(f"[RESULT] FAIL GENERATION {data['error']}")
         return 1
 
     for out in outputs[:1]:
@@ -315,7 +316,7 @@ def main() -> int:
     sidecar = Path(args.outdir) / f"result_{int(time.time()*1000)}.json"
     data = {"ok": True, "outputs": outputs, "config": cfg}
     save_sidecar(sidecar, data)
-    print("[RESULT] OK", json.dumps(data))
+    print("[RESULT] OK")
     return 0
 
 

@@ -40,7 +40,7 @@ def test_attention_api(tmp_path, monkeypatch, capsys):
         "--model_dir",
         "m",
         "--attn",
-        "auto",
+        "sdpa",
     ]
     monkeypatch.setattr(sys, "argv", argv)
     code = engine.main()
