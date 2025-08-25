@@ -15,7 +15,6 @@ import time
 from pathlib import Path
 from typing import List
 
-from core import paths
 
 try:
     import gradio as gr
@@ -609,16 +608,6 @@ def build_app():
                 send_to_txt.click(send_img_to_txt, inputs=[prompt2, neg2], outputs=[prompt, neg])
 
             # ===================== PATHS TAB =====================
-            with gr.Tab("Paths"):
-                official_path = gr.Textbox(label="Official generate.py", value=paths.OFFICIAL_GENERATE)
-                save_paths = gr.Button("Save")
-
-                def _save_official(p):
-                    paths.save_config({"OFFICIAL_GENERATE": p})
-                    return p
-
-                save_paths.click(_save_official, inputs=[official_path], outputs=[official_path])
-
             # ===================== CONSOLE TAB =====================
             with gr.Tab("Console"):
                 gr.Markdown("Use the console outputs in each tab to monitor generation. This tab is a placeholder for future global logs.")

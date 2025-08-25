@@ -44,8 +44,9 @@ python .\wan_ps1_engine.py --dry-run --mode t2v --prompt "ok" \
 ```
 
 The GUI offers an **Engine** toggle between Diffusers (default) and the
-Official TI2V-5B reference script. Official mode is fixed 720p/24 FPS and
-ignores sampler, steps, CFG, and attention backend settings.
+Official TI2V-5B reference script. Official mode is fixed 720p (height=704) at
+24 FPS and ignores sampler, steps, CFG, negative prompt, and attention backend
+settings.
 
 If a model directory is present you can perform a tiny real test:
 

@@ -13,7 +13,7 @@ from core.paths import CKPT_TI2V_5B, OFFICIAL_GENERATE, OUTPUT_DIR, VENV_PY
 
 def build_cmd(engine: str, width: int = 1280, height: int = 704, free_gb: float = 32.0) -> list[str]:
     if engine == "diffusers":
-        return ["pwsh", "-NoLogo", "-File", "wan_runner.ps1"]
+        return ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "wan_runner.ps1"]
     if engine == "official":
         if not OFFICIAL_GENERATE:
             raise ValueError("OFFICIAL_GENERATE unset")
