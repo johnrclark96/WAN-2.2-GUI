@@ -265,11 +265,15 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.dry_run:
-        print(
-            f"[WAN shim] Dry run: mode={args.mode} "
-            f"frames={args.frames} width={args.width} height={args.height}"
-        )
-        print("[RESULT] OK dry-run")
+        payload = {
+            "mode": args.mode,
+            "prompt": args.prompt,
+            "frames": int(args.frames),
+            "width": int(args.width),
+            "height": int(args.height),
+        }
+        print("[WAN shim] Dry run: " + json.dumps(payload, separators=(",", ":")))
+        print("[RESULT] OK " + json.dumps(payload, separators=(",", ":")))
         return 0
 
     cfg = vars(args).copy()
