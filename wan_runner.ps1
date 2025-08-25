@@ -22,29 +22,38 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$python = "D:\\wan22\\venv\\Scripts\\python.exe"
+# Explicit virtual environment interpreter and engine path
+$python = "D:\wan22\venv\Scripts\python.exe"
 $engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
-$env:HF_HOME = "D:\\wan22.cache\\huggingface"
-$env:TRANSFORMERS_CACHE = "D:\\wan22.cache\\huggingface\\hub"
+$env:HF_HOME = "D:\wan22\.cache\huggingface"
+$env:TRANSFORMERS_CACHE = "D:\wan22\.cache\huggingface\hub"
+
 $env:PYTHONIOENCODING = "utf-8"
 
+# Ensure required directories exist
 foreach ($d in @(
-    "D:\\wan22\\outputs",
-    "D:\\wan22\\json",
-    "D:\\wan22.cache\\huggingface",
-    "D:\\wan22.cache\\huggingface\\hub"
-  )) {
+foreach ($d in @(
+    "D:\wan22\outputs",
+    "D:\wan22\json",
+    "D:\wan22\.cache\huggingface",
+    "D:\wan22\.cache\huggingface\hub"
+)) 
+{
   if (!(Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null }
 }
 
+}
+
+# Basic sanity checks
 if (-not (Test-Path $python)) {
-  Write-Host "[WAN shim] Launch: $python (missing)"
-  Write-Error "WAN venv python not found at $python"
-  exit 1
+    Write-Host "[WAN shim] Launch: $python (missing)"
+    Write-Error "WAN virtual environment python not found at $python"
+    exit 1
 }
 if (-not (Test-Path $engine)) { throw "Engine not found: $engine" }
 
+# Build argv for the engine
 $argv = @($engine)
 if ($mode)        { $argv += @("--mode", $mode) }
 if ($prompt)      { $argv += @("--prompt", ($prompt -replace '"', '\"')) }
@@ -69,3 +78,4 @@ if ($dry_run)     { $argv += "--dry-run" }
 Write-Host "[WAN shim] Launch: $python $($argv -join ' ')"
 & $python @argv
 exit $LASTEXITCODE
+
