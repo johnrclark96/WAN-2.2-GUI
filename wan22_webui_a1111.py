@@ -10,9 +10,11 @@ interpreter.
 from __future__ import annotations
 
 import argparse
+import json
+import select
 import subprocess
 from pathlib import Path
-from typing import List, Generator
+from typing import Any, Generator, List
 
 
 from core import paths
@@ -31,6 +33,26 @@ DEFAULT_OUTDIR = paths.OUTPUT_DIR.as_posix()
 
 def snap32(v: int) -> int:
     return max(32, (int(v) // 32) * 32)
+
+
+def safe_int(value: Any, default: int, minimum: int | None = None) -> int:
+    try:
+        val = int(value)
+    except Exception:
+        val = default
+    if minimum is not None:
+        val = max(minimum, val)
+    return val
+
+
+def safe_float(value: Any, default: float, minimum: float | None = None) -> float:
+    try:
+        val = float(value)
+    except Exception:
+        val = default
+    if minimum is not None:
+        val = max(minimum, val)
+    return val
 
 
 def build_args(values: dict) -> List[str]:
@@ -57,11 +79,45 @@ def estimate_mem(width: int, height: int, frames: int, micro: int, batch: int) -
     return width * height * frames * micro * batch / 1024 ** 3 * 2e-6
 
 
+def stream_run(cmd: List[str]) -> Generator[str, None, None]:
+    """Launch *cmd* and yield combined stdout/stderr lines."""
+    yield "[launch] " + " ".join(cmd)
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as e:
+        yield f"[error] {e}"
+        return
+
+    assert proc.stdout is not None and proc.stderr is not None
+    streams = {proc.stdout: "", proc.stderr: "[stderr] "}
+    fds = list(streams.keys())
+    while fds:
+        ready, _, _ = select.select(fds, [], [])
+        for stream in ready:
+            line = stream.readline()
+            if not line:
+                fds.remove(stream)
+                continue
+            stripped = line.rstrip()
+            try:
+                json.loads(stripped)
+            except Exception:
+                pass
+            yield streams[stream] + stripped
+    code = proc.wait()
+    yield f"[exit] code={code}"
+
+
 def run_cmd(engine: str, **kw) -> Generator[str, None, None]:
     mode = kw["mode"]
     prompt = kw.get("prompt", "")
     image = kw.get("image")
-
 
     # unified input validation
     prompt_str = (prompt or "").strip()
@@ -99,10 +155,14 @@ def run_cmd(engine: str, **kw) -> Generator[str, None, None]:
         cmd: List[str] = [
             paths.VENV_PY.as_posix(),
             paths.OFFICIAL_GENERATE,
-            "--task", "ti2v-5B",
-            "--prompt", prompt,
-            "--ckpt_dir", paths.CKPT_TI2V_5B.as_posix(),
-            "--size", size,
+            "--task",
+            "ti2v-5B",
+            "--prompt",
+            prompt,
+            "--ckpt_dir",
+            paths.CKPT_TI2V_5B.as_posix(),
+            "--size",
+            size,
         ]
         if image_path:
             cmd += ["--image", str(Path(image_path).resolve())]
@@ -120,14 +180,7 @@ def run_cmd(engine: str, **kw) -> Generator[str, None, None]:
         args.update({"mode": mode})
         cmd = build_args(args)
 
-    # spawn and stream
-    yield "[launch] " + " ".join(cmd)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        yield line.rstrip()
-    code = proc.wait()
-    yield f"[exit] code={code}"
+    yield from stream_run(cmd)
 
 
 def build_ui():
@@ -196,6 +249,22 @@ def build_ui():
 
             gr.Info(f"mode={mode_v}")
 
+            # Sanitize numeric inputs
+            steps_v = safe_int(steps_v, 20, 1)
+            cfg_v = safe_float(cfg_v, 7.0, 0.0)
+            fps_v = safe_int(fps_v, 24, 1)
+            frames_v = safe_int(frames_v, 9, 1)
+            if (frames_v - 1) % 4 != 0:
+                frames_v = (frames_v - 1) // 4 * 4 + 1
+            width_v = snap32(safe_int(width_v, 1280, 32))
+            height_v = snap32(safe_int(height_v, 704, 32))
+            batch_count_v = safe_int(batch_count_v, 1, 1)
+            batch_size_v = safe_int(batch_size_v, 1, 1)
+            try:
+                seed_v = int(seed_v)
+            except Exception:
+                seed_v = -1
+
             # Command-line-safe mode sent to the runner
             if eng == "diffusers":
                 cli_mode = "t2i" if int(frames_v) == 1 else "t2v"
@@ -205,8 +274,8 @@ def build_ui():
             for line in run_cmd(
                 eng,
                 mode=cli_mode,
-                prompt=prompt_v,
-                neg_prompt=neg_v,
+                prompt=str(prompt_v or ""),
+                neg_prompt=str(neg_v or ""),
                 sampler=sampler_v,
                 steps=steps_v,
                 cfg=cfg_v,

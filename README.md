@@ -26,5 +26,7 @@ python wan_ps1_engine.py --mode t2i --prompt "ok one frame" --frames 1 --width 1
 ```
 
 See [docs/env.md](docs/env.md) for pinned dependency versions and installation notes.
+The file `wan22_frozen_requirements.txt` lists the expected package versions.
+Run `python check_env.py` to verify that the current environment matches these pins.
 
 See [CHANGELOG.md](CHANGELOG.md) for recent updates.
