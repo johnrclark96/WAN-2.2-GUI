@@ -26,19 +26,23 @@ $ErrorActionPreference = "Stop"
 $python = "D:\wan22\venv\Scripts\python.exe"
 $engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
-# Use dot-cache under D:\wan22
 $env:HF_HOME = "D:\wan22\.cache\huggingface"
 $env:TRANSFORMERS_CACHE = "D:\wan22\.cache\huggingface\hub"
+
 $env:PYTHONIOENCODING = "utf-8"
 
 # Ensure required directories exist
+foreach ($d in @(
 foreach ($d in @(
     "D:\wan22\outputs",
     "D:\wan22\json",
     "D:\wan22\.cache\huggingface",
     "D:\wan22\.cache\huggingface\hub"
-)) {
-    if (!(Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null }
+)) 
+{
+  if (!(Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null }
+}
+
 }
 
 # Basic sanity checks
