@@ -26,7 +26,14 @@ def snap32(v: int) -> int:
 
 
 def build_args(values: dict) -> List[str]:
-    args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(RUNNER)]
+    args = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(RUNNER),
+    ]
     for key, val in values.items():
         if val is None or val == "":
             continue
@@ -36,7 +43,7 @@ def build_args(values: dict) -> List[str]:
                 args.append(flag)
         else:
             args.extend([flag, str(val)])
-    return ["powershell.exe"] + args
+    return args
 
 
 def run_cmd(engine: str, **kw):
@@ -55,7 +62,7 @@ def run_cmd(engine: str, **kw):
     if mode in {"i2v", "ti2v"} and not image:
         raise gr.Error("image required for image modes")
     if engine == "official" and mode in {"t2i", "i2v"}:
-        raise gr.Error("Official engine does not support this mode; use Diffusers.")
+        raise gr.Error("Use Diffusers for this mode.")
     if engine == "diffusers" and mode == "t2i":
         kw["frames"] = 1
 
@@ -67,7 +74,7 @@ def run_cmd(engine: str, **kw):
         w = snap32(int(w))
         h = snap32(int(h))
         if h != 704:
-            raise gr.Error("Official engine only supports height=704 (720p).")
+            raise gr.Error("Official engine requires height=704. Try 1280x704 or 704x1280.")
         size = f"{w}*{h}"
         task = "ti2v-5B"
         cmd = [

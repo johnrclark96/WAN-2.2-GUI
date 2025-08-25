@@ -374,7 +374,6 @@ def build_app():
     with gr.Blocks(title=APP_TITLE, css=CSS, theme=gr.themes.Soft()) as demo:
         gr.Markdown(f"## {APP_TITLE}", elem_id="app-title")
 
-        _engine = gr.Radio(["diffusers", "official"], value="diffusers", label="Engine")
 
         with gr.Tabs():
             # ===================== TXT2VID TAB =====================

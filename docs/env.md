@@ -5,8 +5,8 @@ The project targets Windows with CUDA 12.1 and Python 3.10/3.11.  All dependenci
 | Package | Version |
 | ------- | ------- |
 | `torch` | `2.4.*` (cu121) |
-| `torchvision` | `matching` |
-| `torchaudio` | `matching` |
+| `torchvision` | `2.4.*` (cu121) |
+| `torchaudio` | `2.4.*` (cu121) |
 | `diffusers` | `0.35.*` |
 | `transformers` | `4.44.*` |
 | `accelerate` | `0.34.*` |
