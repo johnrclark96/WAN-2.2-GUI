@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import List
 
+
 try:
     import gradio as gr
 except Exception:
@@ -373,6 +374,7 @@ def build_app():
     with gr.Blocks(title=APP_TITLE, css=CSS, theme=gr.themes.Soft()) as demo:
         gr.Markdown(f"## {APP_TITLE}", elem_id="app-title")
 
+
         with gr.Tabs():
             # ===================== TXT2VID TAB =====================
             with gr.Tab("txt2vid"):
@@ -604,6 +606,7 @@ def build_app():
                 send_to_img.click(send_txt_to_img, inputs=[prompt, neg], outputs=[prompt2, neg2])
                 send_to_txt.click(send_img_to_txt, inputs=[prompt2, neg2], outputs=[prompt, neg])
 
+            # ===================== PATHS TAB =====================
             # ===================== CONSOLE TAB =====================
             with gr.Tab("Console"):
                 gr.Markdown("Use the console outputs in each tab to monitor generation. This tab is a placeholder for future global logs.")

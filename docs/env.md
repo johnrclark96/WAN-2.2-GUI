@@ -1,41 +1,31 @@
 # Environment
 
-The project targets the following wheels and versions:
+The project targets Windows with CUDA 12.1 and Python 3.10/3.11.  All dependencies live in `D:\wan22\venv`.
 
 | Package | Version |
 | ------- | ------- |
-| `torch` | `2.4.1+cu124` |
-| `torchvision` | `0.19.1+cu124` |
-| `torchaudio` | `2.4.1+cu124` |
-| `diffusers` | `0.35.1` |
-| `transformers` | `4.49.0` |
-| `tokenizers` | `0.21.x` |
-| `accelerate` | `1.1.1` |
-| `numpy` | `<2` |
+| `torch` | `2.4.*` (cu121) |
+| `torchvision` | `2.4.*` (cu121) |
+| `torchaudio` | `2.4.*` (cu121) |
+| `diffusers` | `0.35.*` |
+| `transformers` | `4.44.*` |
+| `accelerate` | `0.34.*` |
+| `safetensors` | latest |
+| `einops` | latest |
+| `omegaconf` | latest |
+| `imageio` | latest |
+| `imageio-ffmpeg` | latest |
 
-### Flash Attention (Windows, Python 3.10, CUDA 12.4)
+### Flash Attention (Hopper only)
 
 ```powershell
-pip install flash-attn --no-build-isolation --index-url https://flash.attn.wheels/cu124/torch2.4.1
-```
-
-Verification snippet:
-
-```python
-import torch
-import flash_attn  # noqa: F401
-
-print(torch.cuda.is_available())
+# Requires SM >= 90
+pip install flash-attn --no-build-isolation --index-url https://flash.attn.wheels/cu121/torch2.4.0
 ```
 
 ## WAN 2.2 Virtual Environment (Windows)
 
-The WAN engine is meant to live in its own virtual environment so it does
-not conflict with other tools such as Stable Diffusion WebUI.  The
-commands below assume PowerShell and a base directory of `D:\wan22` with
-the virtual environment in `D:\wan22\venv`, models in
-`D:\wan22\models\Wan2.2-TI2V-5B-Diffusers` and outputs in
-`D:\wan22\outputs`.
+The WAN engine lives in its own virtual environment.  Paths assume `D:\wan22` as the root directory.
 
 ```powershell
 cd D:\wan22
@@ -44,14 +34,19 @@ if (!(Test-Path .\venv)) { python -m venv venv }
 
 python -m pip install -U pip wheel
 pip install --index-url https://download.pytorch.org/whl/cu121 \
-    torch==2.4.0 torchvision torchaudio
-pip install "diffusers>=0.35.0" transformers>=4.44 accelerate>=0.34 \
+    torch==2.4.* torchvision torchaudio
+pip install diffusers==0.35.* accelerate==0.34.* transformers==4.44.* \
     safetensors einops omegaconf imageio imageio-ffmpeg pillow
 
 # smoke test (no models required)
 python .\wan_ps1_engine.py --dry-run --mode t2v --prompt "ok" \
     --frames 8 --fps 24 --width 1280 --height 704 --attn auto --dtype bfloat16
 ```
+
+The GUI offers an **Engine** toggle between Diffusers (default) and the
+Official TI2V-5B reference script. Official mode is fixed 720p (height=704) at
+24 FPS and ignores sampler, steps, CFG, negative prompt, and attention backend
+settings.
 
 If a model directory is present you can perform a tiny real test:
 
@@ -60,6 +55,7 @@ python .\wan_ps1_engine.py --mode t2v --prompt "sunrise over the ocean" \
     --steps 12 --cfg 6.5 --fps 12 --frames 16 --width 768 --height 432 \
     --outdir D:\wan22\outputs \
     --dtype bfloat16 --attn auto --seed 123
+```
 
 ### Recommended defaults for 16 GB GPUs
 
@@ -68,4 +64,3 @@ For cards with 16 GB of VRAM these options help avoid out of memory errors:
 ```
 --offload_model true --convert_model_dtype true --t5_cpu true
 ```
-
