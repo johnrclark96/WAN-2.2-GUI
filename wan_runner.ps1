@@ -29,7 +29,12 @@ $env:HF_HOME = "D:\\wan22.cache\\huggingface"
 $env:TRANSFORMERS_CACHE = "D:\\wan22.cache\\huggingface\\hub"
 $env:PYTHONIOENCODING = "utf-8"
 
-foreach ($d in @("D:\\wan22\\outputs", "D:\\wan22\\json")) {
+foreach ($d in @(
+    "D:\\wan22\\outputs",
+    "D:\\wan22\\json",
+    "D:\\wan22.cache\\huggingface",
+    "D:\\wan22.cache\\huggingface\\hub"
+  )) {
   if (!(Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null }
 }
 

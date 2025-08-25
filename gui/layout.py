@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import List
 
+from core import paths
+
 try:
     import gradio as gr
 except Exception:
@@ -373,6 +375,8 @@ def build_app():
     with gr.Blocks(title=APP_TITLE, css=CSS, theme=gr.themes.Soft()) as demo:
         gr.Markdown(f"## {APP_TITLE}", elem_id="app-title")
 
+        _engine = gr.Radio(["diffusers", "official"], value="diffusers", label="Engine")
+
         with gr.Tabs():
             # ===================== TXT2VID TAB =====================
             with gr.Tab("txt2vid"):
@@ -603,6 +607,17 @@ def build_app():
                 # Cross-tab prompt transfer
                 send_to_img.click(send_txt_to_img, inputs=[prompt, neg], outputs=[prompt2, neg2])
                 send_to_txt.click(send_img_to_txt, inputs=[prompt2, neg2], outputs=[prompt, neg])
+
+            # ===================== PATHS TAB =====================
+            with gr.Tab("Paths"):
+                official_path = gr.Textbox(label="Official generate.py", value=paths.OFFICIAL_GENERATE)
+                save_paths = gr.Button("Save")
+
+                def _save_official(p):
+                    paths.save_config({"OFFICIAL_GENERATE": p})
+                    return p
+
+                save_paths.click(_save_official, inputs=[official_path], outputs=[official_path])
 
             # ===================== CONSOLE TAB =====================
             with gr.Tab("Console"):

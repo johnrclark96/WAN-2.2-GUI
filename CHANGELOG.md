@@ -11,3 +11,7 @@
 - Pin dependencies: `diffusers==0.31.0`, `transformers==4.49.0`.
 - Documented that SDPA/flash-attn selection remains unchanged.
 - Cleaned up imports and exception handling in the UI and engine runner.
+- Fix cache path handling in `wan_runner.ps1` and ensure cache directories exist.
+- Remove unused variable from `tools/install_wan_deps.ps1` and gate flash-attn by compute capability.
+- Introduce basic engine toggle with Official command wiring and path persistence.
+- Add smoketest coverage and log parser for Official engine output.

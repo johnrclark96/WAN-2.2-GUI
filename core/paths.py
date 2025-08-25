@@ -51,6 +51,15 @@ MODELS_DIR = Path(_resolve("MODELS_DIR"))
 CKPT_TI2V_5B = Path(_resolve("CKPT_TI2V_5B"))
 OFFICIAL_GENERATE = str(_resolve("OFFICIAL_GENERATE"))
 
+
+def save_config(update: Dict[str, Any]) -> None:
+    """Persist path overrides back to ``wan_paths.json``."""
+    cfg = _config.copy()
+    cfg.update(update)
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with CONFIG_PATH.open("w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2)
+
 __all__ = [
     "WAN22_ROOT",
     "VENV_PY",

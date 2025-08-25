@@ -15,7 +15,6 @@ pip install diffusers==0.35.* accelerate==0.34.* transformers==4.44.* \
     safetensors einops omegaconf imageio imageio-ffmpeg
 
 # Optional FlashAttention (Hopper only)
-$sm = (Get-CimInstance Win32_VideoController | Select-Object -First 1).AdapterRAM
 try {
     $cap = (nvidia-smi --query-gpu=compute_cap --format=csv,noheader) 2>$null
     if ($cap -ge 9.0) {

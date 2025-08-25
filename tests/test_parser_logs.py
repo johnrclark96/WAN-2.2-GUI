@@ -17,6 +17,20 @@ def test_json_progress_done():
     assert done == 'out.mp4'
 
 
+def test_official_log():
+    lines = Path('tests/data/official.log').read_text().splitlines()
+    pct = []
+    done = None
+    for line in lines:
+        msg = json.loads(line)
+        if msg.get('event') == 'progress':
+            pct.append(msg['percent'])
+        elif msg.get('event') == 'done':
+            done = msg.get('video')
+    assert pct[-1] == 50
+    assert done == 'ok.mp4'
+
+
 def test_legacy_progress():
     lines = Path('tests/data/legacy.log').read_text().splitlines()
     percents = []

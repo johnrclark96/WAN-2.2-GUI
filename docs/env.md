@@ -43,6 +43,10 @@ python .\wan_ps1_engine.py --dry-run --mode t2v --prompt "ok" \
     --frames 8 --fps 24 --width 1280 --height 704 --attn auto --dtype bfloat16
 ```
 
+The GUI offers an **Engine** toggle between Diffusers (default) and the
+Official TI2V-5B reference script. Official mode is fixed 720p/24 FPS and
+ignores sampler, steps, CFG, and attention backend settings.
+
 If a model directory is present you can perform a tiny real test:
 
 ```powershell
