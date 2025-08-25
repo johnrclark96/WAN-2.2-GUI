@@ -1,46 +1,53 @@
 #!/usr/bin/env python
-"""Gradio-based WAN 2.2 front-end for A1111 style workflow."""
+"""Gradio-based WAN 2.2 front-end for A1111 style workflow.
+
+This file defines a small Gradio app and a streaming runner that launches the
+PowerShell shim (wan_runner.ps1). It also supports an "official" engine path
+that calls the reference generate.py via the configured virtual environment
+interpreter.
+"""
 
 from __future__ import annotations
 
 import argparse
 import subprocess
-import json
-from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Generator
+
 
 from core import paths
 
 import gradio as gr
 
 
+APP_TITLE = "WAN 2.2 GUI"
+
 ROOT = Path(__file__).resolve().parent
 RUNNER = ROOT / "wan_runner.ps1"
+
 DEFAULT_MODEL_DIR = (paths.MODELS_DIR / "Wan2.2-TI2V-5B-Diffusers").as_posix()
 DEFAULT_OUTDIR = paths.OUTPUT_DIR.as_posix()
 
 
 def snap32(v: int) -> int:
-    return max(32, v // 32 * 32)
+    return max(32, (int(v) // 32) * 32)
 
 
 def build_args(values: dict) -> List[str]:
-    args = [
-        "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(RUNNER),
+    """Build the PowerShell invocation to the engine shim with CLI args."""
+    args: List[str] = ["pwsh", "-NoLogo", "-File", RUNNER.as_posix()]
+    order = [
+        "mode", "prompt", "neg_prompt", "sampler", "steps", "cfg", "seed",
+        "fps", "frames", "width", "height", "batch_count", "batch_size",
+        "outdir", "model_dir", "dtype", "attn", "image",
     ]
-    for key, val in values.items():
-        if val is None or val == "":
+    for key in order:
+        val = values.get(key)
+        if val is None or val == "" or (isinstance(val, bool) and not val):
             continue
         flag = f"--{key}"
         if isinstance(val, bool):
-            if val:
-                args.append(flag)
+            args.append(flag)
         else:
             args.extend([flag, str(val)])
     return args
@@ -50,231 +57,154 @@ def estimate_mem(width: int, height: int, frames: int, micro: int, batch: int) -
     return width * height * frames * micro * batch / 1024 ** 3 * 2e-6
 
 
-def run_cmd(engine: str, **kw):
+def run_cmd(engine: str, **kw) -> Generator[str, None, None]:
     mode = kw["mode"]
     prompt = kw.get("prompt", "")
-    neg = kw.get("neg_prompt", "")
     image = kw.get("image")
 
+
+    # unified input validation
+    prompt_str = (prompt or "").strip()
+    image_path = image or ""
+
+    # general sanity checks
+    if not prompt_str and not image_path:
+        raise gr.Error("Either a prompt or an image is required.")
+    if image_path and not Path(image_path).exists():
+        raise gr.Error(f"image not found: {image_path}")
+
+    # mode-specific guarantees
+    if mode in {"t2v", "ti2v", "t2i"} and not prompt_str:
+        raise gr.Error("prompt required for text modes")
+    if mode in {"i2v", "ti2v"} and not image_path:
+        raise gr.Error("image required for image modes")
+
+    # frame and size normalization
     req_w = snap32(int(kw["width"]))
     req_h = snap32(int(kw["height"]))
     req_frames = int(kw["frames"])
     if (req_frames - 1) % 4 != 0:
         req_frames = (req_frames - 1) // 4 * 4 + 1
     w, h, frames = req_w, req_h, req_frames
+
+    # update for downstream display in logs
     kw.update({"width": w, "height": h, "frames": frames})
 
-    if frames < 1 or kw["steps"] < 1 or kw["batch_count"] < 1 or kw["batch_size"] < 1:
-        raise gr.Error("steps, frames, batch_count and batch_size must be >=1")
-    if mode in {"t2v", "ti2v", "t2i"} and not prompt.strip():
-        raise gr.Error("prompt required for text modes")
-    if mode in {"i2v", "ti2v"} and not image:
-        raise gr.Error("image required for image modes")
-
     if engine == "official":
-        if mode == "i2v":
-            raise gr.Error("Use the diffusers engine for image-to-video.")
         if not paths.OFFICIAL_GENERATE or not Path(paths.OFFICIAL_GENERATE).exists():
-            raise gr.Error("Set OFFICIAL_GENERATE path in Paths tab.")
+            raise gr.Error("Set OFFICIAL_GENERATE path in the Paths tab.")
         if h != 704:
-            raise gr.Error("Official engine requires height=704. Try 1280x704 or 704x1280.")
-        cmd = [
+            raise gr.Error("Official engine only supports height=704 (720p).")
+        size = f"{w}*{h}"
+        cmd: List[str] = [
             paths.VENV_PY.as_posix(),
             paths.OFFICIAL_GENERATE,
-            "--task",
-            "ti2v-5B",
-            "--prompt",
-            prompt,
-            "--ckpt_dir",
-            paths.CKPT_TI2V_5B.as_posix(),
-            "--size",
-            f"{w}*{h}",
+            "--task", "ti2v-5B",
+            "--prompt", prompt,
+            "--ckpt_dir", paths.CKPT_TI2V_5B.as_posix(),
+            "--size", size,
         ]
-        if mode == "ti2v" and image:
-            cmd += ["--image", str(Path(image).resolve())]
+        if image_path:
+            cmd += ["--image", str(Path(image_path).resolve())]
+        # memory guard
         try:
-            import torch
+            import torch  # type: ignore
             free, _ = torch.cuda.mem_get_info()  # type: ignore[attr-defined]
             if free / 1024 ** 3 < 24:
                 cmd += ["--offload_model", "True", "--convert_model_dtype", "--t5_cpu"]
         except Exception:
             pass
-        effective_line = None
     else:
-        if not Path(kw["model_dir"]).exists():
-            raise gr.Error(f"model dir not found: {kw['model_dir']}")
-        attn_mode = kw["attn"]
-        if attn_mode == "flash-attn":
-            try:
-                import torch
-                major, _ = torch.cuda.get_device_capability()  # type: ignore[attr-defined]
-                if major < 9:
-                    gr.Warning("FlashAttention v3 requires Hopper; using sdpa")
-                    attn_mode = "sdpa"
-            except Exception:
-                gr.Warning("FlashAttention v3 requires Hopper; using sdpa")
-                attn_mode = "sdpa"
-
-        micro = 128
-        batch_size = int(kw["batch_size"])
-        free_gb = total_gb = 0.0
-        try:
-            import torch
-            free, total = torch.cuda.mem_get_info()  # type: ignore[attr-defined]
-            free_gb, total_gb = free / 1024 ** 3, total / 1024 ** 3
-        except Exception:
-            free_gb = 32.0
-            total_gb = free_gb
-        req = estimate_mem(w, h, frames, micro, batch_size)
-        while req > free_gb and micro > 32:
-            micro //= 2
-            req = estimate_mem(w, h, frames, micro, batch_size)
-        while req > free_gb and frames > 1:
-            frames = max(1, frames - 4)
-            if (frames - 1) % 4 != 0:
-                frames = (frames - 1) // 4 * 4 + 1
-            req = estimate_mem(w, h, frames, micro, batch_size)
-        aspect = w / h
-        while req > free_gb and w > 32 and h > 32:
-            w = snap32(int(w * 0.9))
-            h = snap32(int(w / aspect))
-            req = estimate_mem(w, h, frames, micro, batch_size)
-        kw.update({"width": w, "height": h, "frames": frames})
-        effective = {
-            "width": w,
-            "height": h,
-            "frames": frames,
-            "micro_batch": micro,
-            "batch_size": batch_size,
-        }
-        paths.JSON_DIR.mkdir(parents=True, exist_ok=True)
-        sidecar = paths.JSON_DIR / f"WAN22_{datetime.now():%Y%m%d_%H%M%S}.json"
-        requested = {
-            "width": req_w,
-            "height": req_h,
-            "frames": req_frames,
-            "micro_batch": 128,
-            "batch_size": batch_size,
-        }
-        with sidecar.open("w", encoding="utf-8") as fh:
-            json.dump(
-                {
-                    "requested": requested,
-                    "effective": effective,
-                    "memory": {"free_gb": free_gb, "total_gb": total_gb},
-                },
-                fh,
-                indent=2,
-            )
-        effective_line = (
-            f"effective settings: width={w} height={h} frames={frames} micro_batch={micro} batch_size={batch_size}"
-        )
-        args = {
-            "mode": mode,
-            "prompt": prompt,
-            "neg_prompt": neg,
-            "sampler": kw["sampler"],
-            "steps": kw["steps"],
-            "cfg": kw["cfg"],
-            "seed": kw["seed"],
-            "fps": kw["fps"],
-            "frames": frames,
-            "width": w,
-            "height": h,
-            "batch_count": kw["batch_count"],
-            "batch_size": batch_size,
-            "outdir": kw["outdir"],
-            "model_dir": kw["model_dir"],
-            "dtype": kw["dtype"],
-            "attn": attn_mode,
-            "image": image,
-        }
+        # diffusers engine via PowerShell runner
+        args = dict(kw)
+        args.update({"mode": mode})
         cmd = build_args(args)
 
+    # spawn and stream
+    yield "[launch] " + " ".join(cmd)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     assert proc.stdout is not None
-    yield "launch: " + " ".join(cmd)
-    if effective_line:
-        yield effective_line
     for line in proc.stdout:
         yield line.rstrip()
-    proc.wait()
-    yield f"[exit {proc.returncode}]"
+    code = proc.wait()
+    yield f"[exit] code={code}"
 
 
 def build_ui():
-    with gr.Blocks(title="WAN 2.2 GUI") as demo:
-        with gr.Tabs():
-            with gr.Tab("Generate"):
-                engine = gr.Radio(["diffusers", "official"], value="diffusers", label="Engine")
-                prompt = gr.Textbox(label="Prompt", lines=3)
-                neg_prompt = gr.Textbox(label="Negative Prompt", lines=2)
-                image = gr.Image(type="filepath", label="Init Image")
-                sampler = gr.Dropdown(["unipc"], value="unipc", label="Sampler")
-                steps = gr.Slider(1, 100, value=20, step=1, label="Steps")
-                cfg = gr.Slider(0, 20, value=7.0, step=0.5, label="CFG")
-                seed = gr.Number(value=-1, label="Seed (-1=random)")
-                fps = gr.Slider(1, 60, value=24, step=1, label="FPS")
-                frames = gr.Slider(1, 200, value=16, step=1, label="Frames")
-                width = gr.Number(value=768, label="Width")
-                height = gr.Number(value=432, label="Height")
-                res_preset = gr.Dropdown(
-                    ["(none)", "896x512", "960x544"],
-                    value="(none)",
-                    label="Resolution Preset (16GB friendly)",
-                )
-                batch_count = gr.Number(value=1, label="Batch Count")
-                batch_size = gr.Number(value=1, label="Batch Size")
-                model_dir = gr.Textbox(value=DEFAULT_MODEL_DIR, label="Model Dir")
-                outdir = gr.Textbox(value=DEFAULT_OUTDIR, label="Output Dir")
-                dtype = gr.Dropdown(["bf16", "fp16", "fp32"], value="bf16", label="DType")
-                attn = gr.Dropdown(["sdpa", "flash-attn"], value="sdpa", label="Attention")
-                run = gr.Button("Generate")
-                log = gr.Textbox(label="Log", lines=20)
+    with gr.Blocks(title=APP_TITLE) as demo:
+        gr.Markdown(f"## {APP_TITLE}", elem_id="app-title")
 
-            with gr.Tab("Paths"):
-                official_path = gr.Textbox(label="Official generate.py", value=paths.OFFICIAL_GENERATE)
-                save_path = gr.Button("Save")
+        engine = gr.Radio(["diffusers", "official"], value="diffusers", label="Engine")
 
-                def _save(p):
-                    paths.save_config({"OFFICIAL_GENERATE": p})
-                    return p
+        with gr.Row():
+            prompt = gr.Textbox(label="Prompt", lines=3)
+            neg_prompt = gr.Textbox(label="Negative Prompt", lines=2)
 
-                save_path.click(_save, inputs=official_path, outputs=official_path)
+        with gr.Row():
+            sampler = gr.Textbox(value="euler", label="Sampler")
+            steps = gr.Slider(1, 50, value=20, step=1, label="Steps")
+            cfg = gr.Slider(1.0, 20.0, value=7.0, step=0.5, label="CFG")
+            seed = gr.Number(value=-1, label="Seed")
 
-        res_preset.change(
-            lambda p: (
-                (896, 512) if p == "896x512" else (960, 544) if p == "960x544" else (gr.update(), gr.update())
-            ),
-            inputs=res_preset,
-            outputs=[width, height],
-        )
+        with gr.Row():
+            fps = gr.Slider(1, 30, value=24, step=1, label="FPS")
+            frames = gr.Slider(1, 49, value=9, step=1, label="Frames")
+            width = gr.Number(value=1280, label="Width")
+            height = gr.Number(value=704, label="Height")
 
-        def on_engine_change(e):
-            if e == "official" and (
-                not paths.OFFICIAL_GENERATE or not Path(paths.OFFICIAL_GENERATE).exists()
-            ):
-                raise gr.Error("Select official generate.py in Paths tab first.")
-            disabled = e == "official"
-            upd = gr.update(interactive=not disabled)
-            return [upd, upd, upd, upd, upd, upd, upd, upd]
+        with gr.Row():
+            batch_count = gr.Number(value=1, label="Batch Count")
+            batch_size = gr.Number(value=1, label="Batch Size")
+            dtype = gr.Dropdown(["fp16", "bf16", "fp32"], value="bf16", label="DType")
+            attn = gr.Dropdown(["sdpa", "flash-attn"], value="sdpa", label="Attention")
 
-        engine.change(
-            on_engine_change,
-            inputs=engine,
-            outputs=[sampler, steps, cfg, fps, frames, attn, neg_prompt, batch_size],
-        )
+        with gr.Row():
+            model_dir = gr.Textbox(value=DEFAULT_MODEL_DIR, label="Model Dir")
+            outdir = gr.Textbox(value=DEFAULT_OUTDIR, label="Output Dir")
 
-        def on_run(eng, prompt_v, neg_v, sampler_v, steps_v, cfg_v, seed_v, fps_v, frames_v, width_v, height_v, batch_count_v, batch_size_v, outdir_v, model_dir_v, dtype_v, attn_v, image_v):
-            mode_v = (
-                "ti2v" if prompt_v and image_v else "i2v" if image_v else "t2v"
-            )
+        image = gr.Image(label="Init Image", type="filepath")
+
+        run = gr.Button("Generate")
+        log = gr.Textbox(label="Log", lines=15)
+
+        def on_run(
+            eng,
+            prompt_v,
+            neg_v,
+            sampler_v,
+            steps_v,
+            cfg_v,
+            seed_v,
+            fps_v,
+            frames_v,
+            width_v,
+            height_v,
+            batch_count_v,
+            batch_size_v,
+            outdir_v,
+            model_dir_v,
+            dtype_v,
+            attn_v,
+            image_v,
+        ):
+            # Human-readable mode for user feedback
+            mode_v = "ti2v" if (prompt_v and image_v) else ("i2v" if image_v else "t2v")
+
+            # Official engine does not support pure image-to-video in this GUI
             if eng == "official" and mode_v == "i2v":
                 raise gr.Error("Use the diffusers engine for image-to-video.")
+
             gr.Info(f"mode={mode_v}")
+
+            # Command-line-safe mode sent to the runner
+            if eng == "diffusers":
+                cli_mode = "t2i" if int(frames_v) == 1 else "t2v"
+            else:  # eng == "official"
+                cli_mode = mode_v
+
             for line in run_cmd(
                 eng,
-                mode=mode_v,
+                mode=cli_mode,
                 prompt=prompt_v,
                 neg_prompt=neg_v,
                 sampler=sampler_v,
@@ -295,6 +225,7 @@ def build_ui():
             ):
                 yield line
 
+        # Single click binding that streams from on_run
         run.click(
             on_run,
             inputs=[
@@ -319,14 +250,15 @@ def build_ui():
             ],
             outputs=log,
         )
+
     return demo
 
 
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=7862)
-    ap.add_argument("--listen", action="store_true")
-    ap.add_argument("--auth", type=str, default=None)
+    ap.add_argument("--listen", action="store_true", default=False)
+    ap.add_argument("--auth", type=str, default="")
     return ap.parse_args()
 
 
