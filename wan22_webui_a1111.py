@@ -10,9 +10,9 @@ interpreter.
 from __future__ import annotations
 
 import argparse
-import json
-import select
 import subprocess
+import threading
+import queue
 from pathlib import Path
 from typing import Any, Generator, List
 
@@ -62,7 +62,7 @@ def safe_float(value: Any, default: float, minimum: float | None = None) -> floa
 
 # PowerShell path resolver with sensible Windows fallbacks
 def _powershell() -> str:
-    preferred = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+    preferred = Path(r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
     if preferred.exists():
         return preferred.as_posix()
 
@@ -108,7 +108,7 @@ def estimate_mem(width: int, height: int, frames: int, micro: int, batch: int) -
 
 
 def stream_run(cmd: List[str]) -> Generator[str, None, None]:
-    """Launch *cmd* and yield combined stdout/stderr lines."""
+    """Launch *cmd* and yield combined stdout/stderr lines (Windows-safe, labeled)."""
     yield "[launch] " + " ".join(cmd)
     try:
         proc = subprocess.Popen(
@@ -123,21 +123,34 @@ def stream_run(cmd: List[str]) -> Generator[str, None, None]:
         return
 
     assert proc.stdout is not None and proc.stderr is not None
-    streams = {proc.stdout: "", proc.stderr: "[stderr] "}
-    fds = list(streams.keys())
-    while fds:
-        ready, _, _ = select.select(fds, [], [])
-        for stream in ready:
-            line = stream.readline()
-            if not line:
-                fds.remove(stream)
-                continue
-            stripped = line.rstrip()
+    q: "queue.Queue[str]" = queue.Queue()
+
+    def pump(stream, prefix: str) -> None:
+        try:
+            for line in iter(stream.readline, ""):
+                if not line:
+                    break
+                q.put(prefix + line.rstrip("\n"))
+        finally:
             try:
-                json.loads(stripped)
+                stream.close()
             except Exception:
                 pass
-            yield streams[stream] + stripped
+
+    t_out = threading.Thread(target=pump, args=(proc.stdout, ""        ), daemon=True)
+    t_err = threading.Thread(target=pump, args=(proc.stderr, "[stderr] "), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    # Drain until the process exits, both pumpers stop, and the queue is empty
+    while True:
+        try:
+            yielded = q.get(timeout=0.1)
+            yield yielded
+        except queue.Empty:
+            if proc.poll() is not None and not t_out.is_alive() and not t_err.is_alive() and q.empty():
+                break
+
     code = proc.wait()
     yield f"[exit] code={code}"
 
