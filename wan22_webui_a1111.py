@@ -358,39 +358,37 @@ def build_ui():
                 cli_mode = "t2i" if int(frames_v) == 1 else "t2v"
             else:  # eng == "official"
                 cli_mode = mode_v
+    # ----- build args once, then branch by engine -----
+    cli_mode = mode_v
 
-cli_mode = mode_v
+    run_kw = {
+        "mode": cli_mode,
+        "prompt": str(prompt_v or ""),
+        "neg_prompt": str(neg_v or ""),
+        "steps": steps_v,
+        "cfg": cfg_v,
+        "seed": seed_v,
+        "fps": fps_v,
+        "frames": frames_v,
+        "width": width_v,
+        "height": height_v,
+        "batch_count": batch_count_v,
+        "batch_size": batch_size_v,
+        "outdir": outdir_v,
+        "model_dir": model_dir_v,
+        "dtype": dtype_v,
+        "attn": attn_v,
+        "image": image_v,
+    }
 
-run_kw = {
-    "mode": cli_mode,
-    "prompt": str(prompt_v or ""),
-    "neg_prompt": str(neg_v or ""),
-    "steps": steps_v,
-    "cfg": cfg_v,
-    "seed": seed_v,
-    "fps": fps_v,
-    "frames": frames_v,
-    "width": width_v,
-    "height": height_v,
-    "batch_count": batch_count_v,
-    "batch_size": batch_size_v,
-    "outdir": outdir_v,
-    "model_dir": model_dir_v,
-    "dtype": dtype_v,
-    "attn": attn_v,
-    "image": image_v,
-}
+    # Only Diffusers accepts/uses a sampler; Official ignores it.
+    if eng == "diffusers":
+        run_kw["sampler"] = sampler_v
 
-# Only Diffusers accepts/uses a sampler; Official ignores it.
-if eng == "diffusers":
-    run_kw["sampler"] = sampler_v
-
-for line in run_cmd(eng, **run_kw):
-    yield line
-return
-                yield line
-
-        # Single click binding that streams from on_run
+    for line in run_cmd(eng, **run_kw):
+        yield line
+    return
+# Single click binding that streams from on_run
         run.click(
             on_run,
             inputs=[
@@ -417,13 +415,15 @@ return
         )
 
         engine.change(
-            lambda e: (
-                gr.Dropdown.update(interactive=e == "diffusers"),
-                gr.Markdown.update(visible=e == "official"),
-            ),
-            inputs=engine,
-            outputs=[sampler, sampler_note],
-        )
+    lambda e: (
+        gr.Dropdown.update(interactive=e == "diffusers"),
+        gr.Markdown.update(visible=e == "official"),
+    ),
+    inputs=[engine],
+    outputs=[sampler, sampler_note],
+)
+
+return demo
 
     return demo
 
