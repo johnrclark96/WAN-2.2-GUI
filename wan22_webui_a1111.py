@@ -123,27 +123,48 @@ def stream_run(cmd: List[str]) -> Generator[str, None, None]:
         return
 
     assert proc.stdout is not None and proc.stderr is not None
-    q: queue.Queue[str] = queue.Queue()
+def stream_run(cmd: List[str]) -> Generator[str, None, None]:
+    """Launch *cmd* and yield combined stdout/stderr lines (Windows-safe, labeled)."""
+    yield "[launch] " + " ".join(cmd)
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as e:
+        yield f"[error] {e}"
+        return
 
-    def pump(stream: Any, prefix: str) -> None:
-        for line in iter(stream.readline, ""):
-            q.put(prefix + line.rstrip())
+    assert proc.stdout is not None and proc.stderr is not None
+    q: "queue.Queue[str]" = queue.Queue()
 
-    threads = [
-        threading.Thread(target=pump, args=(proc.stdout, "")),
-        threading.Thread(target=pump, args=(proc.stderr, "[stderr] ")), 
-    ]
-    for t in threads:
-        t.daemon = True
-        t.start()
-
-    while True:
-        if proc.poll() is not None and q.empty():
-            break
+    def pump(stream, prefix: str) -> None:
         try:
-            yield q.get(timeout=0.1)
+            for line in iter(stream.readline, ""):
+                if not line:
+                    break
+                q.put(prefix + line.rstrip("\n"))
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    t_out = threading.Thread(target=pump, args=(proc.stdout, ""        ), daemon=True)
+    t_err = threading.Thread(target=pump, args=(proc.stderr, "[stderr] "), daemon=True)
+    t_out.start(); t_err.start()
+
+    # Drain until the process exits, both pumpers stop, and the queue is empty
+    while True:
+        try:
+            yielded = q.get(timeout=0.1)
+            yield yielded
         except queue.Empty:
-            continue
+            if proc.poll() is not None and not t_out.is_alive() and not t_err.is_alive() and q.empty():
+                break
 
     code = proc.wait()
     yield f"[exit] code={code}"
