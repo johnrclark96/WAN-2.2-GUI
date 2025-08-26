@@ -62,7 +62,7 @@ def safe_float(value: Any, default: float, minimum: float | None = None) -> floa
 
 # PowerShell path resolver with sensible Windows fallbacks
 def _powershell() -> str:
-    preferred = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+    preferred = Path(r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
     if preferred.exists():
         return preferred.as_posix()
 
@@ -108,22 +108,6 @@ def estimate_mem(width: int, height: int, frames: int, micro: int, batch: int) -
 
 
 def stream_run(cmd: List[str]) -> Generator[str, None, None]:
-    """Launch *cmd* and yield combined stdout/stderr lines."""
-    yield "[launch] " + " ".join(cmd)
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-    except Exception as e:
-        yield f"[error] {e}"
-        return
-
-    assert proc.stdout is not None and proc.stderr is not None
-def stream_run(cmd: List[str]) -> Generator[str, None, None]:
     """Launch *cmd* and yield combined stdout/stderr lines (Windows-safe, labeled)."""
     yield "[launch] " + " ".join(cmd)
     try:
@@ -155,7 +139,8 @@ def stream_run(cmd: List[str]) -> Generator[str, None, None]:
 
     t_out = threading.Thread(target=pump, args=(proc.stdout, ""        ), daemon=True)
     t_err = threading.Thread(target=pump, args=(proc.stderr, "[stderr] "), daemon=True)
-    t_out.start(); t_err.start()
+    t_out.start()
+    t_err.start()
 
     # Drain until the process exits, both pumpers stop, and the queue is empty
     while True:
