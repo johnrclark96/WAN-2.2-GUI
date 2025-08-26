@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import select
 import subprocess
+import threading
+import queue
 from pathlib import Path
 from typing import Any, Generator, List
 
@@ -123,21 +124,35 @@ def stream_run(cmd: List[str]) -> Generator[str, None, None]:
         return
 
     assert proc.stdout is not None and proc.stderr is not None
-    streams = {proc.stdout: "", proc.stderr: "[stderr] "}
-    fds = list(streams.keys())
-    while fds:
-        ready, _, _ = select.select(fds, [], [])
-        for stream in ready:
-            line = stream.readline()
-            if not line:
-                fds.remove(stream)
-                continue
+    q: queue.Queue[str] = queue.Queue()
+
+    def pump(stream: Any, prefix: str) -> None:
+        for line in iter(stream.readline, ""):
             stripped = line.rstrip()
             try:
                 json.loads(stripped)
             except Exception:
                 pass
-            yield streams[stream] + stripped
+            q.put(prefix + stripped)
+
+    threads = [
+        threading.Thread(target=pump, args=(proc.stdout, "")),
+        threading.Thread(target=pump, args=(proc.stderr, "[stderr] ")), 
+    ]
+    for t in threads:
+        t.start()
+
+    while True:
+        if proc.poll() is not None and q.empty():
+            break
+        try:
+            yield q.get(timeout=0.1)
+        except queue.Empty:
+            continue
+
+    for t in threads:
+        t.join()
+
     code = proc.wait()
     yield f"[exit] code={code}"
 
