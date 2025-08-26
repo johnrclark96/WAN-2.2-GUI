@@ -388,45 +388,44 @@ def build_ui():
     for line in run_cmd(eng, **run_kw):
         yield line
     return
-# Single click binding that streams from on_run
-        run.click(
-            on_run,
-            inputs=[
-                engine,
-                prompt,
-                neg_prompt,
-                sampler,
-                steps,
-                cfg,
-                seed,
-                fps,
-                frames,
-                width,
-                height,
-                batch_count,
-                batch_size,
-                outdir,
-                model_dir,
-                dtype,
-                attn,
-                image,
-            ],
-            outputs=log,
-        )
+    # Single click binding that streams from on_run
+    run.click(
+        on_run,
+        inputs=[
+            engine,
+            prompt,
+            neg_prompt,
+            sampler,
+            steps,
+            cfg,
+            seed,
+            fps,
+            frames,
+            width,
+            height,
+            batch_count,
+            batch_size,
+            outdir,
+            model_dir,
+            dtype,
+            attn,
+            image,
+        ],
+        outputs=log,
+    )
 
-        engine.change(
-    lambda e: (
-        gr.Dropdown.update(interactive=e == "diffusers"),
-        gr.Markdown.update(visible=e == "official"),
-    ),
-    inputs=[engine],
-    outputs=[sampler, sampler_note],
-)
-
-return demo
+    # Sampler is Diffusers-only: keep it interactive only for Diffusers,
+    # and show a note when Official is selected.
+    engine.change(
+        lambda e: (
+            gr.Dropdown.update(interactive=(e == "diffusers")),
+            gr.Markdown.update(visible=(e == "official")),
+        ),
+        inputs=[engine],
+        outputs=[sampler, sampler_note],
+    )
 
     return demo
-
 
 def parse_args():
     ap = argparse.ArgumentParser()
