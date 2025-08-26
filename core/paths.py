@@ -9,21 +9,22 @@ from typing import Any, Dict
 CONFIG_PATH = Path(r"D:\\wan22\\wan_paths.json")
 
 _DEF_ROOT = Path(r"D:\\wan22")
-_DEF_VENV = _DEF_ROOT / "venv" / "Scripts" / "python.exe"
+_DEF_PY_EXE = _DEF_ROOT / "venv" / "Scripts" / "python.exe"
+_DEF_PS1 = _DEF_ROOT / "wan_runner.ps1"
 _DEF_OUTPUT = _DEF_ROOT / "outputs"
 _DEF_JSON = _DEF_ROOT / "json"
 _DEF_MODELS = _DEF_ROOT / "models"
 _DEF_CKPT = _DEF_MODELS / "Wan2.2-TI2V-5B"
-_DEF_OFFICIAL = ""
 
 _defaults: Dict[str, Any] = {
     "WAN22_ROOT": _DEF_ROOT,
-    "VENV_PY": _DEF_VENV,
+    "PY_EXE": _DEF_PY_EXE,
+    "PS1_ENGINE": _DEF_PS1,
+    "OFFICIAL_GENERATE": _DEF_ROOT / "generate.py",
     "OUTPUT_DIR": _DEF_OUTPUT,
     "JSON_DIR": _DEF_JSON,
     "MODELS_DIR": _DEF_MODELS,
     "CKPT_TI2V_5B": _DEF_CKPT,
-    "OFFICIAL_GENERATE": _DEF_OFFICIAL,
 }
 
 _config: Dict[str, Any] = {}
@@ -44,12 +45,16 @@ def _resolve(key: str) -> Any:
 
 
 WAN22_ROOT = Path(_resolve("WAN22_ROOT"))
-VENV_PY = Path(_resolve("VENV_PY"))
+PY_EXE = Path(_resolve("PY_EXE"))
+PS1_ENGINE = Path(_resolve("PS1_ENGINE"))
+OFFICIAL_GENERATE = Path(_resolve("OFFICIAL_GENERATE"))
 OUTPUT_DIR = Path(_resolve("OUTPUT_DIR"))
 JSON_DIR = Path(_resolve("JSON_DIR"))
 MODELS_DIR = Path(_resolve("MODELS_DIR"))
 CKPT_TI2V_5B = Path(_resolve("CKPT_TI2V_5B"))
-OFFICIAL_GENERATE = str(_resolve("OFFICIAL_GENERATE"))
+
+# Backward compatibility
+VENV_PY = PY_EXE
 
 
 def save_config(update: Dict[str, Any]) -> None:
@@ -60,12 +65,29 @@ def save_config(update: Dict[str, Any]) -> None:
     with CONFIG_PATH.open("w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)
 
+
+def _autodetect_missing() -> None:
+    update: Dict[str, Any] = {}
+    for key in ("PY_EXE", "PS1_ENGINE", "OFFICIAL_GENERATE"):
+        cur = globals()[key]
+        if not cur.exists() and _defaults[key].exists():
+            globals()[key] = _defaults[key]
+            update[key] = globals()[key].as_posix()
+    if update:
+        save_config(update)
+
+
+_autodetect_missing()
+
 __all__ = [
     "WAN22_ROOT",
-    "VENV_PY",
+    "PY_EXE",
+    "PS1_ENGINE",
     "OUTPUT_DIR",
     "JSON_DIR",
     "MODELS_DIR",
     "CKPT_TI2V_5B",
     "OFFICIAL_GENERATE",
+    # compatibility
+    "VENV_PY",
 ]
