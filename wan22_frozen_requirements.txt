@@ -1,0 +1,13 @@
+# Pinned package versions for WAN 2.2
+torch==2.4.*
+torchvision==2.4.*
+torchaudio==2.4.*
+diffusers==0.35.*
+transformers==4.44.*
+accelerate==0.34.*
+safetensors
+einops
+omegaconf
+imageio
+imageio-ffmpeg
+pillow
