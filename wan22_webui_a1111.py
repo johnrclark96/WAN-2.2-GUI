@@ -10,7 +10,6 @@ interpreter.
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import threading
 import queue
@@ -128,18 +127,14 @@ def stream_run(cmd: List[str]) -> Generator[str, None, None]:
 
     def pump(stream: Any, prefix: str) -> None:
         for line in iter(stream.readline, ""):
-            stripped = line.rstrip()
-            try:
-                json.loads(stripped)
-            except Exception:
-                pass
-            q.put(prefix + stripped)
+            q.put(prefix + line.rstrip())
 
     threads = [
         threading.Thread(target=pump, args=(proc.stdout, "")),
         threading.Thread(target=pump, args=(proc.stderr, "[stderr] ")), 
     ]
     for t in threads:
+        t.daemon = True
         t.start()
 
     while True:
@@ -149,9 +144,6 @@ def stream_run(cmd: List[str]) -> Generator[str, None, None]:
             yield q.get(timeout=0.1)
         except queue.Empty:
             continue
-
-    for t in threads:
-        t.join()
 
     code = proc.wait()
     yield f"[exit] code={code}"
