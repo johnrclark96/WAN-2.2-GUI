@@ -66,6 +66,20 @@ def save_config(update: Dict[str, Any]) -> None:
     with CONFIG_PATH.open("w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)
 
+
+def _autodetect_missing() -> None:
+    update: Dict[str, Any] = {}
+    for key in ("PY_EXE", "PS1_ENGINE", "OFFICIAL_GENERATE"):
+        cur = globals()[key]
+        if not cur.exists() and _defaults[key].exists():
+            globals()[key] = _defaults[key]
+            update[key] = globals()[key].as_posix()
+    if update:
+        save_config(update)
+
+
+_autodetect_missing()
+
 __all__ = [
     "WAN22_ROOT",
     "PY_EXE",

@@ -16,11 +16,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, Generator, List
 
-
 from core import paths
 
 import gradio as gr
-
 
 APP_TITLE = "WAN 2.2 GUI"
 
@@ -62,14 +60,36 @@ def safe_float(value: Any, default: float, minimum: float | None = None) -> floa
     return val
 
 
+# PowerShell path resolver with sensible Windows fallbacks
+def _powershell() -> str:
+    preferred = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+    if preferred.exists():
+        return preferred.as_posix()
+
+    import shutil
+
+    ps = shutil.which("powershell.exe")
+    if ps:
+        return ps
+
+    pwsh = shutil.which("pwsh")
+    if pwsh:
+        return pwsh
+
+    return "powershell.exe"
+
+
 def build_args(values: dict) -> List[str]:
     """Build the PowerShell invocation to the engine shim with CLI args."""
-    args: List[str] = ["pwsh", "-NoLogo", "-File", paths.PS1_ENGINE.as_posix()]
+    args: List[str] = [_powershell(), "-NoLogo", "-File", paths.PS1_ENGINE.as_posix()]
+
+    # Order controls how flags are emitted; keys not present are skipped.
     order = [
         "mode", "prompt", "neg_prompt", "sampler", "steps", "cfg", "seed",
         "fps", "frames", "width", "height", "batch_count", "batch_size",
         "outdir", "model_dir", "dtype", "attn", "image",
     ]
+
     for key in order:
         val = values.get(key)
         if val is None or val == "" or (isinstance(val, bool) and not val):
@@ -79,6 +99,7 @@ def build_args(values: dict) -> List[str]:
             args.append(flag)
         else:
             args.extend([flag, str(val)])
+
     return args
 
 
@@ -313,36 +334,36 @@ def build_ui():
             except Exception:
                 seed_v = -1
 
-            # Command-line-safe mode sent to the runner
-            if eng == "diffusers":
-                cli_mode = "t2i" if int(frames_v) == 1 else "t2v"
-            else:  # eng == "official"
-                cli_mode = mode_v
+            # Decide cli_mode
+            cli_mode = "t2i" if int(frames_v) == 1 else mode_v
 
-            for line in run_cmd(
-                eng,
-                mode=cli_mode,
-                prompt=str(prompt_v or ""),
-                neg_prompt=str(neg_v or ""),
-                sampler=sampler_v,
-                steps=steps_v,
-                cfg=cfg_v,
-                seed=seed_v,
-                fps=fps_v,
-                frames=frames_v,
-                width=width_v,
-                height=height_v,
-                batch_count=batch_count_v,
-                batch_size=batch_size_v,
-                outdir=outdir_v,
-                model_dir=model_dir_v,
-                dtype=dtype_v,
-                attn=attn_v,
-                image=image_v,
-            ):
+            run_kw = {
+                "mode": cli_mode,
+                "prompt": str(prompt_v or ""),
+                "neg_prompt": str(neg_v or ""),
+                "steps": steps_v,
+                "cfg": cfg_v,
+                "seed": seed_v,
+                "fps": fps_v,
+                "frames": frames_v,
+                "width": width_v,
+                "height": height_v,
+                "batch_count": batch_count_v,
+                "batch_size": batch_size_v,
+                "outdir": outdir_v,
+                "model_dir": model_dir_v,
+                "dtype": dtype_v,
+                "attn": attn_v,
+                "image": image_v,
+            }
+
+            if eng == "diffusers":
+                run_kw["sampler"] = sampler_v
+
+            for line in run_cmd(eng, **run_kw):
                 yield line
 
-        # Single click binding that streams from on_run
+        # Bind UI actions
         run.click(
             on_run,
             inputs=[
@@ -370,14 +391,14 @@ def build_ui():
 
         engine.change(
             lambda e: (
-                gr.Dropdown.update(interactive=e == "diffusers"),
-                gr.Markdown.update(visible=e == "official"),
+                gr.Dropdown.update(interactive=(e == "diffusers")),
+                gr.Markdown.update(visible=(e == "official")),
             ),
-            inputs=engine,
+            inputs=[engine],
             outputs=[sampler, sampler_note],
         )
 
-    return demo
+        return demo
 
 
 def parse_args():

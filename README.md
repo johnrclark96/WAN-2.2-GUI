@@ -44,3 +44,9 @@ The GUI exposes a validated subset of Diffusers schedulers:
 - `dpmpp_2m_sde` – DPM++ 2M SDE scheduler.
 
 The official engine ignores this setting; the control is disabled when using that path.
+
+## Paths
+
+The Settings → Paths tab lets you configure locations for `PY_EXE`,
+`PS1_ENGINE`, and `OFFICIAL_GENERATE`. These values are saved to
+`D:\wan22\wan_paths.json` and are auto-detected on startup when possible.
