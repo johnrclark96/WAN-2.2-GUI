@@ -26,5 +26,27 @@ python wan_ps1_engine.py --mode t2i --prompt "ok one frame" --frames 1 --width 1
 ```
 
 See [docs/env.md](docs/env.md) for pinned dependency versions and installation notes.
+The file `wan22_frozen_requirements.txt` lists the expected package versions.
+Run `python check_env.py` to verify that the current environment matches these pins.
 
 See [CHANGELOG.md](CHANGELOG.md) for recent updates.
+
+## Sampler (Diffusers only)
+
+The GUI exposes a validated subset of Diffusers schedulers:
+
+- `unipc` – UniPC multistep scheduler.
+- `ddim` – DDIM scheduler.
+- `euler` – Euler scheduler.
+- `euler_a` – Euler ancestral scheduler.
+- `heun` – Heun scheduler.
+- `dpmpp_2m` – DPM++ 2M scheduler.
+- `dpmpp_2m_sde` – DPM++ 2M SDE scheduler.
+
+The official engine ignores this setting; the control is disabled when using that path.
+
+## Paths
+
+The Settings → Paths tab lets you configure locations for `PY_EXE`,
+`PS1_ENGINE`, and `OFFICIAL_GENERATE`. These values are saved to
+`D:\wan22\wan_paths.json` and are auto-detected on startup when possible.
