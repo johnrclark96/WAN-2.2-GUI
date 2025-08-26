@@ -13,15 +13,12 @@ import argparse
 import json
 import select
 import subprocess
-import shutil
 from pathlib import Path
 from typing import Any, Generator, List
-
 
 from core import paths
 
 import gradio as gr
-
 
 APP_TITLE = "WAN 2.2 GUI"
 
@@ -65,12 +62,11 @@ def safe_float(value: Any, default: float, minimum: float | None = None) -> floa
 
 # PowerShell path resolver with sensible Windows fallbacks
 def _powershell() -> str:
-    from pathlib import Path
-    import shutil
-
     preferred = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
     if preferred.exists():
         return preferred.as_posix()
+
+    import shutil
 
     ps = shutil.which("powershell.exe")
     if ps:
@@ -104,21 +100,6 @@ def build_args(values: dict) -> List[str]:
         else:
             args.extend([flag, str(val)])
 
-    return args
-    order = [
-        "mode", "prompt", "neg_prompt", "sampler", "steps", "cfg", "seed",
-        "fps", "frames", "width", "height", "batch_count", "batch_size",
-        "outdir", "model_dir", "dtype", "attn", "image",
-    ]
-    for key in order:
-        val = values.get(key)
-        if val is None or val == "" or (isinstance(val, bool) and not val):
-            continue
-        flag = f"--{key}"
-        if isinstance(val, bool):
-            args.append(flag)
-        else:
-            args.extend([flag, str(val)])
     return args
 
 
@@ -353,79 +334,72 @@ def build_ui():
             except Exception:
                 seed_v = -1
 
-            # Command-line-safe mode sent to the runner
+            # Decide cli_mode
+            cli_mode = "t2i" if int(frames_v) == 1 else mode_v
+
+            run_kw = {
+                "mode": cli_mode,
+                "prompt": str(prompt_v or ""),
+                "neg_prompt": str(neg_v or ""),
+                "steps": steps_v,
+                "cfg": cfg_v,
+                "seed": seed_v,
+                "fps": fps_v,
+                "frames": frames_v,
+                "width": width_v,
+                "height": height_v,
+                "batch_count": batch_count_v,
+                "batch_size": batch_size_v,
+                "outdir": outdir_v,
+                "model_dir": model_dir_v,
+                "dtype": dtype_v,
+                "attn": attn_v,
+                "image": image_v,
+            }
+
             if eng == "diffusers":
-                cli_mode = "t2i" if int(frames_v) == 1 else "t2v"
-            else:  # eng == "official"
-                cli_mode = mode_v
-    # ----- build args once, then branch by engine -----
-    cli_mode = mode_v
+                run_kw["sampler"] = sampler_v
 
-    run_kw = {
-        "mode": cli_mode,
-        "prompt": str(prompt_v or ""),
-        "neg_prompt": str(neg_v or ""),
-        "steps": steps_v,
-        "cfg": cfg_v,
-        "seed": seed_v,
-        "fps": fps_v,
-        "frames": frames_v,
-        "width": width_v,
-        "height": height_v,
-        "batch_count": batch_count_v,
-        "batch_size": batch_size_v,
-        "outdir": outdir_v,
-        "model_dir": model_dir_v,
-        "dtype": dtype_v,
-        "attn": attn_v,
-        "image": image_v,
-    }
+            for line in run_cmd(eng, **run_kw):
+                yield line
 
-    # Only Diffusers accepts/uses a sampler; Official ignores it.
-    if eng == "diffusers":
-        run_kw["sampler"] = sampler_v
+        # Bind UI actions
+        run.click(
+            on_run,
+            inputs=[
+                engine,
+                prompt,
+                neg_prompt,
+                sampler,
+                steps,
+                cfg,
+                seed,
+                fps,
+                frames,
+                width,
+                height,
+                batch_count,
+                batch_size,
+                outdir,
+                model_dir,
+                dtype,
+                attn,
+                image,
+            ],
+            outputs=log,
+        )
 
-    for line in run_cmd(eng, **run_kw):
-        yield line
-    return
-    # Single click binding that streams from on_run
-    run.click(
-        on_run,
-        inputs=[
-            engine,
-            prompt,
-            neg_prompt,
-            sampler,
-            steps,
-            cfg,
-            seed,
-            fps,
-            frames,
-            width,
-            height,
-            batch_count,
-            batch_size,
-            outdir,
-            model_dir,
-            dtype,
-            attn,
-            image,
-        ],
-        outputs=log,
-    )
+        engine.change(
+            lambda e: (
+                gr.Dropdown.update(interactive=(e == "diffusers")),
+                gr.Markdown.update(visible=(e == "official")),
+            ),
+            inputs=[engine],
+            outputs=[sampler, sampler_note],
+        )
 
-    # Sampler is Diffusers-only: keep it interactive only for Diffusers,
-    # and show a note when Official is selected.
-    engine.change(
-        lambda e: (
-            gr.Dropdown.update(interactive=(e == "diffusers")),
-            gr.Markdown.update(visible=(e == "official")),
-        ),
-        inputs=[engine],
-        outputs=[sampler, sampler_note],
-    )
+        return demo
 
-    return demo
 
 def parse_args():
     ap = argparse.ArgumentParser()
