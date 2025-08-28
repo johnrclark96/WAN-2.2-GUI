@@ -375,10 +375,22 @@ def run_generation(
                 # Prefer NVENC if available; fall back to Diffusers export_to_video
                 fname = f"{base}_{bc:02d}_{bi:02d}.mp4"
                 fpath = Path(params.outdir) / fname
-                T, H, W, _ = arr.shape
-                log(f"Encoding video ({T} frames @ {params.fps} fps) → {fpath}", stage="encode")
-                use_nvenc = (encoder in ("auto", "nvenc")) and _nvenc_ok(codec)
+                # Decide NVENC only if `arr` is an ndarray-like with shape [T, H, W, C]
+                use_nvenc = False
+                T = H = W = 0  # set when NVENC branch is chosen
+                if (encoder in ("auto", "nvenc")) and hasattr(arr, "shape"):
+                    try:
+                        T, H, W, C = arr.shape  # type: ignore[attr-defined]
+                        use_nvenc = _nvenc_ok(codec) and (C in (3, 4))
+                    except Exception:
+                        use_nvenc = False
+
                 if use_nvenc:
+                    # If input is RGBA, drop alpha to RGB for ffmpeg rgb24
+                    if getattr(arr, "shape", None) and arr.shape[-1] == 4:  # type: ignore[attr-defined]
+                        arr = arr[..., :3]
+                        T, H, W, _ = arr.shape  # type: ignore[misc]
+                    log(f"Encoding video ({T} frames @ {params.fps} fps) → {fpath}", stage="encode")
                     import subprocess as _sp
                     enc = f"{codec}_nvenc"
                     if mode == "lossless":
@@ -422,7 +434,8 @@ def run_generation(
                         log(f"FFmpeg/NVENC failed: {e}. Falling back to CPU export_to_video", stage="warn")
                         export_to_video(arr, output_video_path=fpath, fps=params.fps)
                 else:
-                    # CPU path via Diffusers helper
+                    # CPU path via Diffusers helper (also used when arr is a plain list in tests)
+                    log("Encoding via export_to_video (CPU path / non-array input)", stage="encode")
                     export_to_video(arr, output_video_path=fpath, fps=params.fps)
 
             outputs.append(str(fpath))
