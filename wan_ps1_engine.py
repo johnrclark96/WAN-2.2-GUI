@@ -7,17 +7,39 @@ import argparse
 import json
 import time
 import traceback
+import os
 from contextlib import nullcontext
 from pathlib import Path
 from core.paths import OUTPUT_DIR, MODELS_DIR
 from typing import Any, Dict, List
 
 # ---------------- persistent logging helpers ----------------
-from pathlib import Path as _P
-
 _RUN_TS = time.strftime("%Y%m%d_%H%M%S")
-_LOG_DIR_TXT = _P("D:/wan22/logs"); _LOG_DIR_TXT.mkdir(parents=True, exist_ok=True)
-_LOG_DIR_JSON = _P("D:/wan22/json"); _LOG_DIR_JSON.mkdir(parents=True, exist_ok=True)
+
+def _init_log_dirs() -> tuple[Path, Path]:
+    """Pick writable log dirs across environments (CI-friendly).
+    Order: $WAN_LOG_ROOT > D:/wan22 (if exists) > CWD.
+    Never raise at import-time.
+    """
+    candidates: list[Path] = []
+    env_root = os.getenv("WAN_LOG_ROOT")
+    if env_root:
+        candidates.append(Path(env_root))
+    d_base = Path("D:/wan22")
+    if d_base.exists():
+        candidates.append(d_base)
+    candidates.append(Path.cwd())
+    for base in candidates:
+        try:
+            (base / "logs").mkdir(parents=True, exist_ok=True)
+            (base / "json").mkdir(parents=True, exist_ok=True)
+            return base / "logs", base / "json"
+        except Exception:
+            continue
+    # last resort: CWD without mkdir (should already exist)
+    return Path.cwd() / "logs", Path.cwd() / "json"
+
+_LOG_DIR_TXT, _LOG_DIR_JSON = _init_log_dirs()
 _LOG_TXT = _LOG_DIR_TXT / f"wan_run_{_RUN_TS}.log"
 _LOG_JSONL = _LOG_DIR_JSON / f"wan_run_{_RUN_TS}.jsonl"
 
@@ -29,7 +51,8 @@ def log(msg: str, stage: str = "info", **extra) -> None:
     print(line, flush=True)
     try:
         with _LOG_TXT.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+            f.write(line + "
+")
     except Exception:
         pass
     payload = {"ts": _now(), "stage": stage, "msg": msg}
@@ -37,7 +60,8 @@ def log(msg: str, stage: str = "info", **extra) -> None:
         payload["extra"] = extra
     try:
         with _LOG_JSONL.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            f.write(json.dumps(payload, ensure_ascii=False) + "
+")
     except Exception:
         pass
 
@@ -183,34 +207,41 @@ def load_pipeline(model_dir: str, dtype: str):  # pragma: no cover - heavy
         "fp32": torch.float32,
     }[dtype]
 
-    t0 = _now(); log(f"Loading model from: {model_dir}", stage="load")
+    t0 = _now()
+    log(f"Loading model from: {model_dir}", stage="load")
     vae = AutoencoderKLWan.from_pretrained(model_dir, subfolder="vae", torch_dtype=torch_dtype)
     pipe = WanPipeline.from_pretrained(model_dir, vae=vae, torch_dtype=torch_dtype)
     pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 
     # Prefer memory layouts that speed Conv3d (no fidelity change)
     try:
-        pipe.vae = pipe.vae.to(memory_format=torch.channels_last_3d); log("VAE memory_format=channels_last_3d", stage="opt")
+        pipe.vae = pipe.vae.to(memory_format=torch.channels_last_3d)
+        log("VAE memory_format=channels_last_3d", stage="opt")
     except Exception:
         try:
-            pipe.vae = pipe.vae.to(memory_format=torch.channels_last); log("VAE memory_format=channels_last", stage="opt")
+            pipe.vae = pipe.vae.to(memory_format=torch.channels_last)
+            log("VAE memory_format=channels_last", stage="opt")
         except Exception:
             pass
 
     # Diffusers memory helpers (no output change)
     try:
-        pipe.enable_attention_slicing(); log("Attention slicing enabled", stage="opt")
+        pipe.enable_attention_slicing()
+        log("Attention slicing enabled", stage="opt")
     except Exception:
         log("Attention slicing unavailable", stage="warn")
     for _fn in (getattr(pipe.vae, "enable_slicing", None), getattr(pipe.vae, "enable_tiling", None)):
         try:
-            if callable(_fn): _fn(); log(f"VAE {_fn.__name__} enabled", stage="opt")
+            if callable(_fn):
+                _fn()
+                log(f"VAE {_fn.__name__} enabled", stage="opt")
         except Exception:
             log("VAE slicing/tiling unavailable", stage="warn")
 
     # Steadier than model_cpu_offload; do not also call pipe.to('cuda')
     try:
-        pipe.enable_sequential_cpu_offload(); log("Sequential CPU offload enabled", stage="opt")
+        pipe.enable_sequential_cpu_offload()
+        log("Sequential CPU offload enabled", stage="opt")
     except Exception as e:
         log(f"Sequential CPU offload unavailable: {e}", stage="warn")
 
@@ -312,7 +343,8 @@ def run_generation(
             # Free space before decode inside __call__
             try:
                 if hasattr(pipe, "transformer"):
-                    pipe.transformer.to("cpu"); log("Transformer → CPU before decode", stage="opt")
+                    pipe.transformer.to("cpu")
+                    log("Transformer → CPU before decode", stage="opt")
             except Exception:
                 pass
             try:
@@ -320,7 +352,8 @@ def run_generation(
             except Exception:
                 pass
 
-            start = time.time(); log(f"Batch {bc} starting…", stage="gen")
+            start = time.time()
+            log(f"Batch {bc} starting…", stage="gen")
             with torch.inference_mode():
                 result = pipe(**kwargs)
             try:
@@ -389,8 +422,7 @@ def run_generation(
                 else:
                     # CPU path via Diffusers helper
                     export_to_video(arr, output_video_path=fpath, fps=params.fps)
-                
-                
+
             outputs.append(str(fpath))
     return outputs
 
