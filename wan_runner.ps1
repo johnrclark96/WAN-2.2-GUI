@@ -31,6 +31,14 @@ $env:HF_HOME = "D:\wan22\.cache\huggingface"
 $env:TRANSFORMERS_CACHE = "D:\wan22\.cache\huggingface\hub"
 $env:PYTHONIOENCODING = "utf-8"
 
+# Calmer allocator + lazy CUDA module loading
+$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True,max_split_size_mb:128"
+$env:CUDA_MODULE_LOADING = "LAZY"
+
+
+# Ensure logs dir exists for persistent run logs
+@("D:\wan22\logs") | ForEach-Object { if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ | Out-Null } }
+
 # Ensure required directories exist (pipeline form avoids nested parentheses)
 @(
   "D:\wan22\outputs",
