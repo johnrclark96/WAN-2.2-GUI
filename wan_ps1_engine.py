@@ -14,12 +14,13 @@ from core.paths import OUTPUT_DIR, MODELS_DIR
 from typing import Any, Dict, List
 
 # ---------------- persistent logging helpers ----------------
+import os
+
 _RUN_TS = time.strftime("%Y%m%d_%H%M%S")
 
 def _init_log_dirs() -> tuple[Path, Path]:
     """Pick writable log dirs across environments (CI-friendly).
-    Order: $WAN_LOG_ROOT > D:/wan22 (if exists) > CWD.
-    Never raise at import-time.
+    Order: $WAN_LOG_ROOT > D:/wan22 (if exists) > CWD. Never raise at import-time.
     """
     candidates: list[Path] = []
     env_root = os.getenv("WAN_LOG_ROOT")
@@ -36,7 +37,7 @@ def _init_log_dirs() -> tuple[Path, Path]:
             return base / "logs", base / "json"
         except Exception:
             continue
-    # last resort: CWD without mkdir (should already exist)
+    # last resort: CWD
     return Path.cwd() / "logs", Path.cwd() / "json"
 
 _LOG_DIR_TXT, _LOG_DIR_JSON = _init_log_dirs()
