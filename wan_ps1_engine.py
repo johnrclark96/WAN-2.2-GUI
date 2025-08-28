@@ -14,7 +14,6 @@ from core.paths import OUTPUT_DIR, MODELS_DIR
 from typing import Any, Dict, List
 
 # ---------------- persistent logging helpers ----------------
-import os
 
 _RUN_TS = time.strftime("%Y%m%d_%H%M%S")
 
@@ -337,7 +336,6 @@ def run_generation(
     mode    = getattr(params, "encode_mode", "delivery")  # delivery|lossless
     preset  = getattr(params, "nvenc_preset", "p4")   # p1..p7
     cq      = str(getattr(params, "nvenc_cq", 18))     # NVENC delivery quality
-    crf     = str(getattr(params, "x264_crf", 18))     # CPU delivery quality
 
     for bc in range(params.batch_count):
         with attn_ctx:
