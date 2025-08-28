@@ -11,7 +11,7 @@ import os
 from contextlib import nullcontext
 from pathlib import Path
 from core.paths import OUTPUT_DIR, MODELS_DIR
-from typing import Any, Dict, List
+from typing import Any, Dict, List, IO
 
 # ---------------- persistent logging helpers ----------------
 
@@ -405,12 +405,15 @@ def run_generation(
                     t1 = _now()
                     try:
                         proc = _sp.Popen(ff, stdin=_sp.PIPE, stdout=_sp.PIPE, stderr=_sp.PIPE)
+                        stdin: IO[bytes] | None = proc.stdin
+                        if stdin is None:
+                            raise RuntimeError("FFmpeg Popen.stdin is None despite PIPE")
                         for i in range(T):
-                            proc.stdin.write(arr[i].tobytes())
+                            stdin.write(arr[i].tobytes())
                             if (i % max(1, T // 20) == 0) or (i == T - 1):
                                 pct = int((i + 1) * 100 / T)
                                 log(f"encode progress {i+1}/{T} ({pct}%)", stage="encode")
-                        proc.stdin.close()
+                        stdin.close()
                         out, err = proc.communicate()
                         if proc.returncode != 0:
                             raise RuntimeError(err.decode("utf-8", errors="ignore"))
