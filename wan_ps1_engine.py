@@ -52,7 +52,6 @@ def log(msg: str, stage: str = "info", **extra) -> None:
     try:
         with _LOG_TXT.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
-            
     except Exception:
         pass
     payload = {"ts": _now(), "stage": stage, "msg": msg}
@@ -61,7 +60,6 @@ def log(msg: str, stage: str = "info", **extra) -> None:
     try:
         with _LOG_JSONL.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
     except Exception:
         pass
 
@@ -353,7 +351,9 @@ def run_generation(
 
             start = time.time()
             log(f"Batch {bc} starting…", stage="gen")
-            with torch.inference_mode():
+            im = getattr(torch, "inference_mode", None)
+            _ctx = im() if callable(im) else nullcontext()
+            with _ctx:
                 result = pipe(**kwargs)
             try:
                 torch.cuda.synchronize()
