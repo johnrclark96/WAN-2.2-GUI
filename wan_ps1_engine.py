@@ -12,6 +12,36 @@ from pathlib import Path
 from core.paths import OUTPUT_DIR, MODELS_DIR
 from typing import Any, Dict, List
 
+# ---------------- persistent logging helpers ----------------
+from pathlib import Path as _P
+
+_RUN_TS = time.strftime("%Y%m%d_%H%M%S")
+_LOG_DIR_TXT = _P("D:/wan22/logs"); _LOG_DIR_TXT.mkdir(parents=True, exist_ok=True)
+_LOG_DIR_JSON = _P("D:/wan22/json"); _LOG_DIR_JSON.mkdir(parents=True, exist_ok=True)
+_LOG_TXT = _LOG_DIR_TXT / f"wan_run_{_RUN_TS}.log"
+_LOG_JSONL = _LOG_DIR_JSON / f"wan_run_{_RUN_TS}.jsonl"
+
+def _now() -> float:
+    return time.time()
+
+def log(msg: str, stage: str = "info", **extra) -> None:
+    line = f"[{time.strftime('%H:%M:%S')}] [{stage}] {msg}"
+    print(line, flush=True)
+    try:
+        with _LOG_TXT.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    payload = {"ts": _now(), "stage": stage, "msg": msg}
+    if extra:
+        payload["extra"] = extra
+    try:
+        with _LOG_JSONL.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+# ---------------- lazy/optional globals ----------------
 torch: Any = None
 Image: Any = None
 export_to_video: Any = None
@@ -29,12 +59,12 @@ def snap32(x: int) -> int:
 def log_vram(label: str) -> None:
     """Print VRAM usage for debugging."""
     try:
-        import torch
+        import torch as _t
     except Exception:  # pragma: no cover - torch optional in tests
         return
-    if not torch.cuda.is_available():  # pragma: no cover - GPU may be absent
+    if not _t.cuda.is_available():  # pragma: no cover - GPU may be absent
         return
-    free, total = torch.cuda.mem_get_info()  # type: ignore[arg-type]
+    free, total = _t.cuda.mem_get_info()  # type: ignore[arg-type]
     used = (total - free) / 1024**2
     print(f"[INFO] {label} VRAM: {used:.0f} MiB used / {total/1024**2:.0f} MiB total")
 
@@ -50,8 +80,8 @@ def attention_context(pref: str):
     name = "sdpa"
     if pref == "flash-attn":
         try:
-            import torch
-            major, _ = torch.cuda.get_device_capability()  # type: ignore[attr-defined]
+            import torch as _t
+            major, _ = _t.cuda.get_device_capability()  # type: ignore[attr-defined]
             if major >= 9:
                 backend = SDPBackend.FLASH_ATTENTION
                 name = "flash-attn"
@@ -139,30 +169,59 @@ def validate(p: argparse.Namespace) -> None:
 
 
 def load_pipeline(model_dir: str, dtype: str):  # pragma: no cover - heavy
+    """Optimized, quality-neutral loader for WAN pipeline."""
     global WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler, torch
     if WanPipeline is None:
         WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler, _, _ = _lazy_diffusers()
     if torch is None:
         import torch as _torch
         torch = _torch
+
     torch_dtype = {
         "bf16": torch.bfloat16,
         "fp16": torch.float16,
         "fp32": torch.float32,
     }[dtype]
-    vae = AutoencoderKLWan.from_pretrained(
-        model_dir, subfolder="vae", torch_dtype=torch.float32
-    )
-    pipe = WanPipeline.from_pretrained(
-        model_dir, vae=vae, torch_dtype=torch_dtype
-    )
+
+    t0 = _now(); log(f"Loading model from: {model_dir}", stage="load")
+    vae = AutoencoderKLWan.from_pretrained(model_dir, subfolder="vae", torch_dtype=torch_dtype)
+    pipe = WanPipeline.from_pretrained(model_dir, vae=vae, torch_dtype=torch_dtype)
     pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
-    pipe.to("cuda")
+
+    # Prefer memory layouts that speed Conv3d (no fidelity change)
     try:
-        pipe.enable_model_cpu_offload()
-    except Exception as e:  # pragma: no cover - accelerate may be absent
-        print(f"[WARN] CPU offload unavailable: {e}")
-    pipe.transformer.to("cuda")
+        pipe.vae = pipe.vae.to(memory_format=torch.channels_last_3d); log("VAE memory_format=channels_last_3d", stage="opt")
+    except Exception:
+        try:
+            pipe.vae = pipe.vae.to(memory_format=torch.channels_last); log("VAE memory_format=channels_last", stage="opt")
+        except Exception:
+            pass
+
+    # Diffusers memory helpers (no output change)
+    try:
+        pipe.enable_attention_slicing(); log("Attention slicing enabled", stage="opt")
+    except Exception:
+        log("Attention slicing unavailable", stage="warn")
+    for _fn in (getattr(pipe.vae, "enable_slicing", None), getattr(pipe.vae, "enable_tiling", None)):
+        try:
+            if callable(_fn): _fn(); log(f"VAE {_fn.__name__} enabled", stage="opt")
+        except Exception:
+            log("VAE slicing/tiling unavailable", stage="warn")
+
+    # Steadier than model_cpu_offload; do not also call pipe.to('cuda')
+    try:
+        pipe.enable_sequential_cpu_offload(); log("Sequential CPU offload enabled", stage="opt")
+    except Exception as e:
+        log(f"Sequential CPU offload unavailable: {e}", stage="warn")
+
+    # Optional: compile VAE decoder for small overhead win (same math)
+    try:
+        pipe.vae.decoder = torch.compile(pipe.vae.decoder, mode="reduce-overhead", fullgraph=False)
+        log("torch.compile for VAE decoder", stage="opt")
+    except Exception as e:
+        log(f"torch.compile skipped: {e}", stage="warn")
+
+    log(f"Pipeline loaded in {(_now()-t0):.2f}s (dtype={dtype})", stage="load")
     return pipe
 
 
@@ -172,9 +231,11 @@ def run_generation(
     attn_name: str,
     attn_ctx,
 ) -> List[str]:
+    """Generate and save, with persistent stage logs and fast encoding."""
     global torch, Image, export_to_video, load_image
     need_img = params.frames == 1 or bool(params.image)
     _lazy_utils(require_image=need_img, force=True)
+
     generator = None
     if params.seed >= 0 and torch is not None:
         generator = torch.Generator("cuda").manual_seed(int(params.seed))
@@ -192,9 +253,7 @@ def run_generation(
         "output_type": "np",
     }
     if params.image:
-        img = load_image(params.image).convert("RGB").resize(
-            (params.width, params.height), Image.BICUBIC
-        )
+        img = load_image(params.image).convert("RGB").resize((params.width, params.height), Image.BICUBIC)
         kwargs["image"] = img
 
     allowed = {
@@ -212,14 +271,66 @@ def run_generation(
     }
     assert set(kwargs).issubset(allowed)
 
+    # Announce decode start right after last denoise step if supported
+    try:
+        import inspect as _inspect
+        def _last_step_cb(step, timestep, dict_out):
+            if step == params.steps - 1:
+                log("Denoising finished. Starting VAE decode…", stage="decode")
+        if "callback_on_step_end" in _inspect.signature(pipe.__call__).parameters:
+            kwargs["callback_on_step_end"] = _last_step_cb
+    except Exception:
+        pass
+
     outputs: List[str] = []
     base = str(int(time.time() * 1000))
+
+    # helper: check NVENC availability lazily
+    def _nvenc_ok(codec: str) -> bool:
+        import subprocess as _sp
+        key = "_NVENC_OK"
+        if hasattr(_nvenc_ok, key):
+            return getattr(_nvenc_ok, key)
+        try:
+            p = _sp.run(["ffmpeg", "-hide_banner", "-encoders"], stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True, timeout=5)
+            ok = (f"{codec}_nvenc" in p.stdout)
+        except Exception:
+            ok = False
+        setattr(_nvenc_ok, key, ok)
+        return ok
+
+    # encoding defaults (safe if args lack these attrs)
+    encoder = getattr(params, "encoder", "auto")      # auto|nvenc|cpu
+    codec   = getattr(params, "codec",   "h264")      # h264|hevc
+    mode    = getattr(params, "encode_mode", "delivery")  # delivery|lossless
+    preset  = getattr(params, "nvenc_preset", "p4")   # p1..p7
+    cq      = str(getattr(params, "nvenc_cq", 18))     # NVENC delivery quality
+    crf     = str(getattr(params, "x264_crf", 18))     # CPU delivery quality
+
     for bc in range(params.batch_count):
-        start = time.time()
         with attn_ctx:
-            result = pipe(**kwargs)
-        elapsed = time.time() - start
-        print(f"[INFO] Batch {bc}: {elapsed:.2f}s total, {elapsed / params.steps:.3f}s/step")
+            # Free space before decode inside __call__
+            try:
+                if hasattr(pipe, "transformer"):
+                    pipe.transformer.to("cpu"); log("Transformer → CPU before decode", stage="opt")
+            except Exception:
+                pass
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+            start = time.time(); log(f"Batch {bc} starting…", stage="gen")
+            with torch.inference_mode():
+                result = pipe(**kwargs)
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
+            elapsed = time.time() - start
+            print(f"[INFO] Batch {bc}: {elapsed:.2f}s total, {elapsed / max(1, params.steps):.3f}s/step")
+            log(f"Batch {bc} finished in {elapsed:.2f}s", stage="gen")
+
         vids = getattr(result, "frames", getattr(result, "images", []))
         for bi, arr in enumerate(vids):
             if params.frames == 1:
@@ -227,10 +338,59 @@ def run_generation(
                 fname = f"{base}_{bc:02d}_{bi:02d}.png"
                 fpath = Path(params.outdir) / fname
                 img.save(fpath)
+                log(f"Saved image → {fpath}", stage="save")
             else:
+                # Prefer NVENC if available; fall back to Diffusers export_to_video
                 fname = f"{base}_{bc:02d}_{bi:02d}.mp4"
                 fpath = Path(params.outdir) / fname
-                export_to_video(arr, output_video_path=fpath, fps=params.fps)
+                T, H, W, _ = arr.shape
+                log(f"Encoding video ({T} frames @ {params.fps} fps) → {fpath}", stage="encode")
+                use_nvenc = (encoder in ("auto", "nvenc")) and _nvenc_ok(codec)
+                if use_nvenc:
+                    import subprocess as _sp
+                    enc = f"{codec}_nvenc"
+                    if mode == "lossless":
+                        ff = [
+                            "ffmpeg", "-loglevel", "error", "-y",
+                            "-f", "rawvideo", "-pix_fmt", "rgb24",
+                            "-s", f"{W}x{H}", "-r", str(params.fps), "-i", "-",
+                            "-c:v", enc, "-tune", "lossless", "-rc", "constqp", "-qp", "0",
+                            "-preset", preset, "-profile:v", "high444p", "-pix_fmt", "yuv444p",
+                            str(fpath),
+                        ]
+                        log(f"NVENC lossless ({enc}, preset {preset})", stage="encode")
+                    else:
+                        gop = max(1, int(params.fps * 2))
+                        ff = [
+                            "ffmpeg", "-loglevel", "error", "-y",
+                            "-f", "rawvideo", "-pix_fmt", "rgb24",
+                            "-s", f"{W}x{H}", "-r", str(params.fps), "-i", "-",
+                            "-c:v", enc, "-preset", preset, "-rc", "vbr_hq", "-cq", cq,
+                            "-bf", "2", "-g", str(gop), "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                            str(fpath),
+                        ]
+                        log(f"NVENC delivery ({enc}, preset {preset}, cq {cq})", stage="encode")
+                    t1 = _now()
+                    try:
+                        proc = _sp.Popen(ff, stdin=_sp.PIPE, stdout=_sp.PIPE, stderr=_sp.PIPE)
+                        for i in range(T):
+                            proc.stdin.write(arr[i].tobytes())
+                            if (i % max(1, T // 20) == 0) or (i == T - 1):
+                                pct = int((i + 1) * 100 / T)
+                                log(f"encode progress {i+1}/{T} ({pct}%)", stage="encode")
+                        proc.stdin.close()
+                        out, err = proc.communicate()
+                        if proc.returncode != 0:
+                            raise RuntimeError(err.decode("utf-8", errors="ignore"))
+                        log(f"Encode finished in {(_now()-t1):.1f}s", stage="encode")
+                    except Exception as e:
+                        log(f"FFmpeg/NVENC failed: {e}. Falling back to CPU export_to_video", stage="warn")
+                        export_to_video(arr, output_video_path=fpath, fps=params.fps)
+                else:
+                    # CPU path via Diffusers helper
+                    export_to_video(arr, output_video_path=fpath, fps=params.fps)
+                
+                
             outputs.append(str(fpath))
     return outputs
 
