@@ -10,9 +10,6 @@ interpreter.
 from __future__ import annotations
 
 import argparse
-import subprocess
-import threading
-import queue
 from pathlib import Path
 from typing import Any, Generator, List
 
@@ -107,52 +104,45 @@ def estimate_mem(width: int, height: int, frames: int, micro: int, batch: int) -
     return width * height * frames * micro * batch / 1024 ** 3 * 2e-6
 
 
-def stream_run(cmd: List[str]) -> Generator[str, None, None]:
-    """Launch *cmd* and yield combined stdout/stderr lines (Windows-safe, labeled)."""
-    yield "[launch] " + " ".join(cmd)
+def stream_run(cmd: List[str], cwd: str | None = None) -> Generator[str, None, None]:
+    """
+    Launch *cmd* and yield a single cumulative string so the GUI textbox
+    persists the full log. We merge STDERR→STDOUT and read one stream.
+    """
+    import subprocess
+
+    buf: list[str] = []
+    launch = "[launch] " + " ".join(cmd)
+    buf.append(launch)
+    yield "\n".join(buf)
     try:
         proc = subprocess.Popen(
             cmd,
+            cwd=cwd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # merge stderr into stdout
             text=True,
             bufsize=1,
         )
     except Exception as e:
-        yield f"[error] {e}"
+        buf.append(f"[error] {e}")
+        yield "\n".join(buf)
         return
 
-    assert proc.stdout is not None and proc.stderr is not None
-    q: "queue.Queue[str]" = queue.Queue()
+    assert proc.stdout is not None
+    for line in iter(proc.stdout.readline, ""):
+        buf.append(line.rstrip("\r\n"))
+        yield "\n".join(buf)
 
-    def pump(stream, prefix: str) -> None:
-        try:
-            for line in iter(stream.readline, ""):
-                if not line:
-                    break
-                q.put(prefix + line.rstrip("\n"))
-        finally:
-            try:
-                stream.close()
-            except Exception:
-                pass
-
-    t_out = threading.Thread(target=pump, args=(proc.stdout, ""        ), daemon=True)
-    t_err = threading.Thread(target=pump, args=(proc.stderr, "[stderr] "), daemon=True)
-    t_out.start()
-    t_err.start()
-
-    # Drain until the process exits, both pumpers stop, and the queue is empty
-    while True:
-        try:
-            yielded = q.get(timeout=0.1)
-            yield yielded
-        except queue.Empty:
-            if proc.poll() is not None and not t_out.is_alive() and not t_err.is_alive() and q.empty():
-                break
-
+    # finalize
     code = proc.wait()
-    yield f"[exit] code={code}"
+    if proc.stdout is not None:
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+    buf.append(f"[exit] code={code}")
+    yield "\n".join(buf)
 
 
 def run_cmd(engine: str = "diffusers", **kw) -> Generator[str, None, None]:
@@ -225,7 +215,8 @@ def run_cmd(engine: str = "diffusers", **kw) -> Generator[str, None, None]:
             raise gr.Error(f"invalid sampler: {sampler}")
         # diffusers engine via PowerShell runner
         args = dict(kw)
-        args.update({"mode": mode})
+        cli_mode = "t2i" if mode == "t2i" else "t2v"
+        args["mode"] = cli_mode
         cmd = build_args(args)
 
     yield from stream_run(cmd)
@@ -238,6 +229,7 @@ def build_ui():
         with gr.Tabs():
             with gr.Tab("Generate"):
                 engine = gr.Radio(["diffusers", "official"], value="diffusers", label="Engine")
+                mode = gr.Radio(["T2V", "T2I"], value="T2V", label="Generation Mode")
 
                 with gr.Row():
                     prompt = gr.Textbox(label="Prompt", lines=3)
@@ -258,7 +250,7 @@ def build_ui():
 
                 with gr.Row():
                     fps = gr.Slider(1, 30, value=24, step=1, label="FPS")
-                    frames = gr.Slider(1, 49, value=9, step=1, label="Frames")
+                    frames = gr.Slider(1, 97, value=16, step=1, label="Frames")
                     width = gr.Number(value=1280, label="Width")
                     height = gr.Number(value=704, label="Height")
 
@@ -266,7 +258,7 @@ def build_ui():
                     batch_count = gr.Number(value=1, label="Batch Count")
                     batch_size = gr.Number(value=1, label="Batch Size")
                     dtype = gr.Dropdown(["fp16", "bf16", "fp32"], value="bf16", label="DType")
-                    attn = gr.Dropdown(["sdpa", "flash-attn"], value="sdpa", label="Attention")
+                    attn = gr.Dropdown(["sdpa", "flash-attn"], value="flash-attn", label="Attention")
 
                 with gr.Row():
                     model_dir = gr.Textbox(value=DEFAULT_MODEL_DIR, label="Model Dir")
@@ -275,7 +267,7 @@ def build_ui():
                 image = gr.Image(label="Init Image", type="filepath")
 
                 run = gr.Button("Generate")
-                log = gr.Textbox(label="Log", lines=15)
+                log = gr.Textbox(label="Log", lines=18, show_copy_button=True)
 
             with gr.Tab("Paths"):
                 py_exe = gr.Textbox(paths.PY_EXE.as_posix(), label="PY_EXE")
@@ -315,9 +307,13 @@ def build_ui():
             dtype_v,
             attn_v,
             image_v,
+            mode_sel,
         ):
-            # Human-readable mode for user feedback
-            mode_v = "ti2v" if (prompt_v and image_v) else ("i2v" if image_v else "t2v")
+            sel = str(mode_sel or "T2V").upper()
+            if sel == "T2I":
+                mode_v = "t2i"
+            else:
+                mode_v = "ti2v" if (prompt_v and image_v) else ("i2v" if image_v else "t2v")
 
             # Official engine does not support pure image-to-video in this GUI
             if eng == "official" and mode_v == "i2v":
@@ -329,9 +325,12 @@ def build_ui():
             steps_v = safe_int(steps_v, 20, 1)
             cfg_v = safe_float(cfg_v, 7.0, 0.0)
             fps_v = safe_int(fps_v, 24, 1)
-            frames_v = safe_int(frames_v, 9, 1)
-            if (frames_v - 1) % 4 != 0:
-                frames_v = (frames_v - 1) // 4 * 4 + 1
+            if mode_v == "t2i":
+                frames_v = 1
+            else:
+                frames_v = safe_int(frames_v, 16, 1)
+                if (frames_v - 1) % 4 != 0:
+                    frames_v = (frames_v - 1) // 4 * 4 + 1
             orig_w = safe_int(width_v, 1280, 32)
             orig_h = safe_int(height_v, 704, 32)
             width_v = snap32(orig_w)
@@ -347,11 +346,8 @@ def build_ui():
             except Exception:
                 seed_v = -1
 
-            # Decide cli_mode
-            cli_mode = "t2i" if int(frames_v) == 1 else mode_v
-
             run_kw = {
-                "mode": cli_mode,
+                "mode": mode_v,
                 "prompt": str(prompt_v or ""),
                 "neg_prompt": str(neg_v or ""),
                 "steps": steps_v,
@@ -398,6 +394,7 @@ def build_ui():
                 dtype,
                 attn,
                 image,
+                mode,
             ],
             outputs=log,
         )
@@ -409,6 +406,21 @@ def build_ui():
             ),
             inputs=[engine],
             outputs=[sampler, sampler_note],
+        )
+
+        def _on_mode_change(m: str, cur_frames: int):
+            is_t2i = (m or "T2V").upper() == "T2I"
+            frames_val = 1 if is_t2i else max(1, cur_frames)
+            return (
+                gr.update(value=frames_val, interactive=not is_t2i),
+                gr.update(interactive=not is_t2i),
+            )
+
+        mode.change(
+            _on_mode_change,
+            inputs=[mode, frames],
+            outputs=[frames, fps],
+            queue=False,
         )
 
         return demo
