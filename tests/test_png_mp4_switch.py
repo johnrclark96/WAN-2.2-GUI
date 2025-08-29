@@ -52,7 +52,7 @@ def test_png_single_frame(tmp_path, monkeypatch):
     diffusers.utils = utils
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
     monkeypatch.setitem(sys.modules, "diffusers.utils", utils)
-    outputs = wan_video.generate_video_wan(params, pipe=DummyPipe())
+    outputs, _ = wan_video.generate_video_wan(params, pipe=DummyPipe())
     assert outputs[0].endswith(".png")
     assert Path(outputs[0]).exists()
 
@@ -95,6 +95,6 @@ def test_mp4_multi_frame(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
     monkeypatch.setitem(sys.modules, "diffusers.utils", utils)
     monkeypatch.setattr(engine, "torch", types.SimpleNamespace())
-    outputs = wan_video.generate_video_wan(params, pipe=DummyPipe())
+    outputs, _ = wan_video.generate_video_wan(params, pipe=DummyPipe())
     assert outputs[0].endswith(".mp4")
     assert called["fps"] == 9

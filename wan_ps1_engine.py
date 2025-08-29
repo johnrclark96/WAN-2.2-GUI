@@ -91,27 +91,48 @@ def log_vram(label: str) -> None:
     print(f"[INFO] {label} VRAM: {used:.0f} MiB used / {total/1024**2:.0f} MiB total")
 
 
-def attention_context(pref: str):
+def attention_context(pref: str, pipe: Any | None = None):
     """Return (name, context manager) for the requested attention backend."""
     try:
         from torch.nn.attention import SDPBackend, sdpa_kernel  # type: ignore
     except Exception:  # pragma: no cover - torch absent
         return "sdpa", nullcontext()
 
-    backend = SDPBackend.EFFICIENT_ATTENTION
     name = "sdpa"
-    if pref == "flash-attn":
+    ctx = sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)
+    if pref in ("auto", "flash-attn"):
         try:
-            import torch as _t
-            major, _ = _t.cuda.get_device_capability()  # type: ignore[attr-defined]
-            if major >= 9:
-                backend = SDPBackend.FLASH_ATTENTION
+            with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
                 name = "flash-attn"
+                ctx = sdpa_kernel(SDPBackend.FLASH_ATTENTION)
+        except Exception as e:
+            if pref == "flash-attn":
+                log(f"FA3 requested but unavailable ({e}); using sdpa", stage="attn")
+    if pref == "flash-attn-ext" and pipe is not None:
+        try:
+            from diffusers.models.attention_processor import FlashAttention2Processor
+            if hasattr(pipe, "transformer"):
+                pipe.transformer.set_attn_processor(FlashAttention2Processor())
+                name = "flash-attn-ext"
+                ctx = nullcontext()
             else:
-                print("[WARN] FlashAttention v3 requires Hopper; using sdpa")
-        except Exception:
-            print("[WARN] FlashAttention v3 requires Hopper; using sdpa")
-    return name, sdpa_kernel(backend)
+                log("Pipeline has no .transformer attribute; using sdpa", stage="attn")
+        except Exception as e:
+            log(f"flash-attn-ext requested but unavailable ({e}); using sdpa", stage="attn")
+    return name, ctx
+
+
+def _dtype_fixup(dtype: str) -> str:
+    """Auto-fallback bf16 -> fp16 when bf16 isn't ideal/supported on this GPU."""
+    try:
+        import torch as _t
+        if dtype.lower() == "bf16" and _t.cuda.is_available():
+            major, _ = _t.cuda.get_device_capability()  # type: ignore[attr-defined]
+            if major < 8:
+                return "fp16"
+    except Exception:
+        pass
+    return dtype
 
 
 def save_sidecar(path: Path, data: Dict[str, Any]) -> None:
@@ -244,11 +265,20 @@ def load_pipeline(model_dir: str, dtype: str):  # pragma: no cover - heavy
         log(f"Sequential CPU offload unavailable: {e}", stage="warn")
 
     # Optional: compile VAE decoder for small overhead win (same math)
+    import platform
+    has_triton = True
     try:
-        pipe.vae.decoder = torch.compile(pipe.vae.decoder, mode="reduce-overhead", fullgraph=False)
-        log("torch.compile for VAE decoder", stage="opt")
-    except Exception as e:
-        log(f"torch.compile skipped: {e}", stage="warn")
+        import triton  # type: ignore  # noqa: F401
+    except Exception:
+        has_triton = False
+    if os.getenv("WAN_FORCE_COMPILE", "0") == "1" and has_triton and platform.system() != "Windows":
+        try:
+            pipe.vae.decoder = torch.compile(pipe.vae.decoder, mode="reduce-overhead", fullgraph=False)
+            log("torch.compile for VAE decoder", stage="opt")
+        except Exception as e:
+            log(f"torch.compile skipped: {e}", stage="warn")
+    else:
+        log("torch.compile disabled (no Triton/Windows or WAN_FORCE_COMPILE!=1)", stage="opt")
 
     log(f"Pipeline loaded in {(_now()-t0):.2f}s (dtype={dtype})", stage="load")
     return pipe
@@ -501,7 +531,16 @@ def main() -> int:
         "--dtype", choices=["bf16", "fp16", "fp32"], default="bf16"
     )
     parser.add_argument(
-        "--attn", choices=["sdpa", "flash-attn"], default="sdpa"
+        "--attn",
+        choices=["auto", "sdpa", "flash-attn", "flash-attn-ext"],
+        default="auto",
+        help=(
+            "auto: FlashAttention via PyTorch SDP if available, else SDPA; "
+            "sdpa: always SDPA; "
+            "flash-attn: force FlashAttention via SDP (warn+fall back if missing); "
+            "flash-attn-ext: Diffusers FlashAttention2Processor "
+            "(requires flash_attn wheel; falls back to SDPA if unsupported)"
+        ),
     )
     parser.add_argument("--image", default="")
     parser.add_argument("--dry-run", action="store_true")
@@ -517,6 +556,10 @@ def main() -> int:
         print("[WAN shim] Dry run: " + json.dumps(payload, separators=(",", ":")))
         print("[RESULT] OK " + json.dumps(payload, separators=(",", ":")))
         return 0
+
+    args.dtype = _dtype_fixup(args.dtype)
+    if args.dtype.lower() != "bf16":
+        print(f"[opt] dtype auto-adjusted to {args.dtype} (bf16 not ideal on this GPU)")
 
     cfg = vars(args).copy()
 
@@ -543,7 +586,8 @@ def main() -> int:
         gen = wan_video.generate_video_wan
 
     try:
-        outputs = gen(args)
+        outputs, attn_used = gen(args)
+        cfg["attention_backend"] = attn_used
     except Exception as e:
         sidecar = Path(args.outdir) / f"error_{int(time.time()*1000)}.json"
         gen_err: Dict[str, Any] = {
