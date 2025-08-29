@@ -107,15 +107,18 @@ def attention_context(pref: str, pipe: Any | None = None):
                 ctx = sdpa_kernel(SDPBackend.FLASH_ATTENTION)
         except Exception as e:
             if pref == "flash-attn":
-                print(f"[WARN] FA3 requested but unavailable ({e}); using sdpa")
+                log(f"FA3 requested but unavailable ({e}); using sdpa", stage="attn")
     if pref == "flash-attn-ext" and pipe is not None:
         try:
             from diffusers.models.attention_processor import FlashAttention2Processor
-            pipe.transformer.set_attn_processor(FlashAttention2Processor())
-            name = "flash-attn-ext"
-            ctx = nullcontext()
+            if hasattr(pipe, "transformer"):
+                pipe.transformer.set_attn_processor(FlashAttention2Processor())
+                name = "flash-attn-ext"
+                ctx = nullcontext()
+            else:
+                log("Pipeline has no .transformer attribute; using sdpa", stage="attn")
         except Exception as e:
-            print(f"[WARN] flash-attn-ext requested but unavailable ({e}); using sdpa")
+            log(f"flash-attn-ext requested but unavailable ({e}); using sdpa", stage="attn")
     return name, ctx
 
 
@@ -528,7 +531,15 @@ def main() -> int:
         "--dtype", choices=["bf16", "fp16", "fp32"], default="bf16"
     )
     parser.add_argument(
-        "--attn", choices=["auto", "sdpa", "flash-attn", "flash-attn-ext"], default="auto"
+        "--attn",
+        choices=["auto", "sdpa", "flash-attn", "flash-attn-ext"],
+        default="auto",
+        help=(
+            "auto: PyTorch FA3 via SDP if available, else SDPA; "
+            "sdpa: always SDPA; "
+            "flash-attn: force FA3 (warn+fallback if absent); "
+            "flash-attn-ext: use Diffusers FlashAttention2Processor (requires flash_attn wheel)"
+        ),
     )
     parser.add_argument("--image", default="")
     parser.add_argument("--dry-run", action="store_true")
