@@ -105,16 +105,22 @@ def estimate_mem(width: int, height: int, frames: int, micro: int, batch: int) -
 
 
 def stream_run(cmd: List[str], cwd: str | None = None) -> Generator[str, None, None]:
-    """Yield cumulative stdout/stderr so the GUI log persists the full run."""
+    """
+    Launch *cmd* and yield a single cumulative string so the GUI textbox
+    persists the full log. We merge STDERR→STDOUT and read one stream.
+    """
     import subprocess
 
     buf: list[str] = []
+    launch = "[launch] " + " ".join(cmd)
+    buf.append(launch)
+    yield "\n".join(buf)
     try:
         proc = subprocess.Popen(
             cmd,
             cwd=cwd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.STDOUT,  # merge stderr into stdout
             text=True,
             bufsize=1,
         )
@@ -128,12 +134,9 @@ def stream_run(cmd: List[str], cwd: str | None = None) -> Generator[str, None, N
         buf.append(line.rstrip("\r\n"))
         yield "\n".join(buf)
 
-    if proc.stdout is not None:
-        try:
-            proc.stdout.close()
-        except Exception:
-            pass
-    proc.wait()
+    code = proc.wait()
+    buf.append(f"[exit] code={code}")
+    yield "\n".join(buf)
 
 
 def run_cmd(engine: str = "diffusers", **kw) -> Generator[str, None, None]:
