@@ -407,17 +407,25 @@ def run_generation(
                 img.save(fpath)
                 log(f"Saved image → {fpath}", stage="save")
             else:
-                # Prefer NVENC if available; fall back to Diffusers export_to_video
+                # Prefer NVENC when possible; verify codec + channels first
                 fname = f"{base}_{bc:02d}_{bi:02d}.mp4"
                 fpath = Path(params.outdir) / fname
-                # Be robust to lists (tests) or numpy arrays (runtime)
+                use_nvenc = False
+                if (encoder in ("auto", "nvenc")) and hasattr(arr, "shape"):
+                    try:
+                        T, H, W, C = arr.shape  # type: ignore[attr-defined]
+                        use_nvenc = _nvenc_ok(codec) and (C in (3, 4))
+                    except Exception:
+                        use_nvenc = False
+                # Compute T/H/W defensively for logging and CPU fallback
                 T = arr.shape[0] if hasattr(arr, "shape") else len(arr)
-                H = arr.shape[1] if hasattr(arr, "shape") else (len(arr[0]) if arr and hasattr(arr[0], '__len__') else 0)
-                W = arr.shape[2] if hasattr(arr, "shape") else (len(arr[0][0]) if arr and hasattr(arr[0], '__len__') and hasattr(arr[0][0], '__len__') else 0)
-                _ = 3
+                H = arr.shape[1] if hasattr(arr, "shape") else (len(arr[0]) if T and hasattr(arr[0], "__len__") else 0)
+                W = arr.shape[2] if hasattr(arr, "shape") else (len(arr[0][0]) if T and hasattr(arr[0], "__len__") and hasattr(arr[0][0], "__len__") else 0)
                 log(f"Encoding video ({T} frames @ {params.fps} fps) → {fpath}", stage="encode")
-                use_nvenc = (encoder in ('auto', 'nvenc')) and _nvenc_ok(codec)
                 if use_nvenc:
+                    # If frames are RGBA, drop alpha for ffmpeg rgb24 input
+                    if getattr(arr, "shape", None) and arr.shape[-1] == 4:  # type: ignore[attr-defined]
+                        arr = arr[..., :3]
                     import subprocess as _sp
                     enc = f"{codec}_nvenc"
                     if mode == "lossless":
