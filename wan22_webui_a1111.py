@@ -134,7 +134,13 @@ def stream_run(cmd: List[str], cwd: str | None = None) -> Generator[str, None, N
         buf.append(line.rstrip("\r\n"))
         yield "\n".join(buf)
 
+    # finalize
     code = proc.wait()
+    if proc.stdout is not None:
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
     buf.append(f"[exit] code={code}")
     yield "\n".join(buf)
 
