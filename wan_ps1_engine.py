@@ -282,7 +282,9 @@ def run_generation(
         "output_type": "np",
     }
     if params.image:
-        img = load_image(params.image).convert("RGB").resize((params.width, params.height), Image.BICUBIC)
+        _Resampling = getattr(Image, "Resampling", Image)
+        _BICUBIC = getattr(_Resampling, "BICUBIC", getattr(Image, "BICUBIC", 3))
+        img = load_image(params.image).convert("RGB").resize((params.width, params.height), _BICUBIC)
         kwargs["image"] = img
 
     allowed = {
@@ -348,15 +350,17 @@ def run_generation(
     # helper: check NVENC availability lazily
     def _nvenc_ok(codec: str) -> bool:
         import subprocess as _sp
-        key = "_NVENC_OK"
-        if hasattr(_nvenc_ok, key):
-            return getattr(_nvenc_ok, key)
+        cache = getattr(_nvenc_ok, '_CACHE', {})
+        cached = cache.get(codec)
+        if cached is not None:
+            return cached
         try:
-            p = _sp.run(["ffmpeg", "-hide_banner", "-encoders"], stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True, timeout=5)
-            ok = (f"{codec}_nvenc" in p.stdout)
+            p = _sp.run(['ffmpeg', '-hide_banner', '-encoders'], stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True, timeout=5)
+            ok = (f'{codec}_nvenc' in p.stdout)
         except Exception:
             ok = False
-        setattr(_nvenc_ok, key, ok)
+        cache[codec] = ok
+        setattr(_nvenc_ok, '_CACHE', cache)
         return ok
 
     # encoding defaults (safe if args lack these attrs)
@@ -403,25 +407,25 @@ def run_generation(
                 img.save(fpath)
                 log(f"Saved image → {fpath}", stage="save")
             else:
-                # Prefer NVENC if available; fall back to Diffusers export_to_video
+                # Prefer NVENC when possible; verify codec + channels first
                 fname = f"{base}_{bc:02d}_{bi:02d}.mp4"
                 fpath = Path(params.outdir) / fname
-                # Decide NVENC only if `arr` is an ndarray-like with shape [T, H, W, C]
                 use_nvenc = False
-                T = H = W = 0  # set when NVENC branch is chosen
                 if (encoder in ("auto", "nvenc")) and hasattr(arr, "shape"):
                     try:
                         T, H, W, C = arr.shape  # type: ignore[attr-defined]
                         use_nvenc = _nvenc_ok(codec) and (C in (3, 4))
                     except Exception:
                         use_nvenc = False
-
+                # Compute T/H/W defensively for logging and CPU fallback
+                T = arr.shape[0] if hasattr(arr, "shape") else len(arr)
+                H = arr.shape[1] if hasattr(arr, "shape") else (len(arr[0]) if T and hasattr(arr[0], "__len__") else 0)
+                W = arr.shape[2] if hasattr(arr, "shape") else (len(arr[0][0]) if T and hasattr(arr[0], "__len__") and hasattr(arr[0][0], "__len__") else 0)
+                log(f"Encoding video ({T} frames @ {params.fps} fps) → {fpath}", stage="encode")
                 if use_nvenc:
-                    # If input is RGBA, drop alpha to RGB for ffmpeg rgb24
+                    # If frames are RGBA, drop alpha for ffmpeg rgb24 input
                     if getattr(arr, "shape", None) and arr.shape[-1] == 4:  # type: ignore[attr-defined]
                         arr = arr[..., :3]
-                        T, H, W, _ = arr.shape  # type: ignore[misc]
-                    log(f"Encoding video ({T} frames @ {params.fps} fps) → {fpath}", stage="encode")
                     import subprocess as _sp
                     enc = f"{codec}_nvenc"
                     if mode == "lossless":

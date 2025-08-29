@@ -32,7 +32,7 @@ $env:TRANSFORMERS_CACHE = "D:\wan22\.cache\huggingface\hub"
 $env:PYTHONIOENCODING = "utf-8"
 
 # Calmer allocator + lazy CUDA module loading
-$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True,max_split_size_mb:128"
+$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True,max_split_size_mb:256,garbage_collection_threshold:0.9"
 $env:CUDA_MODULE_LOADING = "LAZY"
 
 
