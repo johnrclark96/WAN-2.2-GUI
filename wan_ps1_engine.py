@@ -303,9 +303,31 @@ def run_generation(
     # Announce decode start right after last denoise step if supported
     try:
         import inspect as _inspect
-        def _last_step_cb(step, timestep, dict_out):
-            if step == params.steps - 1:
-                log("Denoising finished. Starting VAE decode…", stage="decode")
+
+        def _last_step_cb(*cb_args, **cb_kwargs):
+            """
+            Compatible with WAN/Diffusers variants that call either:
+              (pipe, i, t, callback_kwargs)  OR  (i, t, callback_kwargs)
+            """
+            step = None
+            # Prefer explicit kw first
+            if "i" in cb_kwargs and isinstance(cb_kwargs["i"], int):
+                step = cb_kwargs["i"]
+            # Then positional: arg[1] if first is 'self'
+            elif len(cb_args) >= 2 and isinstance(cb_args[1], int):
+                step = cb_args[1]
+            # Fallback: single-positional form
+            elif len(cb_args) >= 1 and isinstance(cb_args[0], int):
+                step = cb_args[0]
+
+            try:
+                if step is not None and int(step) == int(params.steps) - 1:
+                    log("Denoising finished. Starting VAE decode...", stage="decode")
+            except Exception:
+                # never let logging break the generation
+                pass
+            return None
+
         if "callback_on_step_end" in _inspect.signature(pipe.__call__).parameters:
             kwargs["callback_on_step_end"] = _last_step_cb
     except Exception:
