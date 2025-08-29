@@ -308,25 +308,34 @@ def run_generation(
             """
             Compatible with WAN/Diffusers variants that call either:
               (pipe, i, t, callback_kwargs)  OR  (i, t, callback_kwargs)
+            Must return a dict (callback_kwargs) for the pipeline to .pop() from.
             """
-            step = None
-            # Prefer explicit kw first
-            if "i" in cb_kwargs and isinstance(cb_kwargs["i"], int):
-                step = cb_kwargs["i"]
-            # Then positional: arg[1] if first is 'self'
-            elif len(cb_args) >= 2 and isinstance(cb_args[1], int):
-                step = cb_args[1]
-            # Fallback: single-positional form
-            elif len(cb_args) >= 1 and isinstance(cb_args[0], int):
-                step = cb_args[0]
+            # 1) Extract callback_kwargs dict
+            cb_dict = None
+            if "callback_kwargs" in cb_kwargs and isinstance(cb_kwargs["callback_kwargs"], dict):
+                cb_dict = cb_kwargs["callback_kwargs"]
+            elif cb_args and isinstance(cb_args[-1], dict):
+                cb_dict = cb_args[-1]
+            if cb_dict is None:
+                cb_dict = {}
 
+            # 2) Extract step index
+            step = cb_kwargs.get("i")
+            if not isinstance(step, int):
+                if len(cb_args) >= 2 and isinstance(cb_args[1], int):
+                    step = cb_args[1]
+                elif len(cb_args) >= 1 and isinstance(cb_args[0], int):
+                    step = cb_args[0]
+
+            # 3) Log on last step (don't ever break the pipeline)
             try:
                 if step is not None and int(step) == int(params.steps) - 1:
                     log("Denoising finished. Starting VAE decode...", stage="decode")
             except Exception:
-                # never let logging break the generation
                 pass
-            return None
+
+            # Always return the dict the pipeline expects
+            return cb_dict
 
         if "callback_on_step_end" in _inspect.signature(pipe.__call__).parameters:
             kwargs["callback_on_step_end"] = _last_step_cb
