@@ -535,10 +535,11 @@ def main() -> int:
         choices=["auto", "sdpa", "flash-attn", "flash-attn-ext"],
         default="auto",
         help=(
-            "auto: PyTorch FA3 via SDP if available, else SDPA; "
+            "auto: FlashAttention via PyTorch SDP if available, else SDPA; "
             "sdpa: always SDPA; "
-            "flash-attn: force FA3 (warn+fallback if absent); "
-            "flash-attn-ext: use Diffusers FlashAttention2Processor (requires flash_attn wheel)"
+            "flash-attn: force FlashAttention via SDP (warn+fall back if missing); "
+            "flash-attn-ext: Diffusers FlashAttention2Processor "
+            "(requires flash_attn wheel; falls back to SDPA if unsupported)"
         ),
     )
     parser.add_argument("--image", default="")

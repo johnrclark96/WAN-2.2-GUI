@@ -27,7 +27,6 @@ $python = "D:\wan22\venv\Scripts\python.exe"
 $engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
 # Caches / allocator hygiene
-$null = $null  # removed TRANSFORMERS_CACHE; rely on HF_HOME instead
 $env:HF_HOME = "D:\wan22\.cache\huggingface"
 $env:PYTHONIOENCODING = "utf-8"
 
