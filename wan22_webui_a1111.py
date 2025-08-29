@@ -32,6 +32,9 @@ SAMPLERS = [
 DEFAULT_MODEL_DIR = (paths.MODELS_DIR / "Wan2.2-TI2V-5B-Diffusers").as_posix()
 DEFAULT_OUTDIR = paths.OUTPUT_DIR.as_posix()
 
+ATTN_CHOICES = ["auto", "sdpa", "flash-attn", "flash-attn-ext"]
+ATTN_DEFAULT = "auto"
+
 
 def snap32(v: int) -> int:
     return max(32, (int(v) // 32) * 32)
@@ -258,7 +261,7 @@ def build_ui():
                     batch_count = gr.Number(value=1, label="Batch Count")
                     batch_size = gr.Number(value=1, label="Batch Size")
                     dtype = gr.Dropdown(["fp16", "bf16", "fp32"], value="bf16", label="DType")
-                    attn = gr.Dropdown(["sdpa", "flash-attn"], value="flash-attn", label="Attention")
+                    attn = gr.Dropdown(choices=ATTN_CHOICES, value=ATTN_DEFAULT, label="Attention")
 
                 with gr.Row():
                     model_dir = gr.Textbox(value=DEFAULT_MODEL_DIR, label="Model Dir")

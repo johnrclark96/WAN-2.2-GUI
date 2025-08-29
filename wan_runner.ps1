@@ -28,7 +28,6 @@ $engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
 # Use dot-cache under D:\wan22
 $env:HF_HOME = "D:\wan22\.cache\huggingface"
-$env:TRANSFORMERS_CACHE = "D:\wan22\.cache\huggingface\hub"
 $env:PYTHONIOENCODING = "utf-8"
 
 # Calmer allocator + lazy CUDA module loading

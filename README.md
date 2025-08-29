@@ -50,3 +50,28 @@ The official engine ignores this setting; the control is disabled when using tha
 The Settings → Paths tab lets you configure locations for `PY_EXE`,
 `PS1_ENGINE`, and `OFFICIAL_GENERATE`. These values are saved to
 `D:\wan22\wan_paths.json` and are auto-detected on startup when possible.
+
+## Attention Backends (Windows)
+
+The **Attention** dropdown now supports:
+
+- `auto` (default): uses PyTorch FlashAttention (FA3 via SDP) if available in your Torch build; otherwise falls back to SDPA.
+- `sdpa`: forces standard PyTorch SDPA attention.
+- `flash-attn`: forces FA3 via PyTorch SDP. If FA3 kernels are not present, it warns and falls back to SDPA.
+- `flash-attn-ext`: uses Diffusers' FlashAttention2Processor when the `flash_attn` wheel is installed (recommended on Ada GPUs).
+
+**Windows note:** PyTorch FA3 kernels are not generally shipped for Windows wheels; use `flash-attn-ext` if you have a `flash_attn` wheel installed. The UI default (`auto`) will select SDPA in that case.
+
+## Dtype Auto-Fallback
+
+If you select `bf16` on GPUs where bf16 is suboptimal or unsupported, the engine auto-adjusts to `fp16` and logs the change. You can still force bf16 via the UI.
+
+## torch.compile (VAE decode)
+
+On Windows, `torch.compile` is gated off by default to avoid Triton-related crashes. To experiment on supported platforms, set:
+
+```
+WAN_FORCE_COMPILE=1
+```
+
+If Triton is available and the OS is not Windows, the VAE decode path will be compiled; otherwise it falls back safely to eager mode.

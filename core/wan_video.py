@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, List, Tuple
 
 import wan_ps1_engine as engine
 
 
-def generate_video_wan(args: Any, pipe: Any | None = None) -> List[str]:
+def generate_video_wan(args: Any, pipe: Any | None = None) -> Tuple[List[str], str]:
     """Generate video (or single PNG) using the 5B pipeline.
 
     Parameters
@@ -22,12 +22,12 @@ def generate_video_wan(args: Any, pipe: Any | None = None) -> List[str]:
     if pipe is None:
         pipe = engine.load_pipeline(args.model_dir, args.dtype)
     engine.log_vram("after load")
-    attn_name, attn_ctx = engine.attention_context(args.attn)
+    attn_name, attn_ctx = engine.attention_context(args.attn, pipe)
     print(f"[INFO] Attention backend: {attn_name}")
     try:
         outputs = engine.run_generation(pipe, args, attn_name, attn_ctx)
         engine.log_vram("after run")
-        return outputs
+        return outputs, attn_name
     finally:
         if engine.torch is not None:
             try:
