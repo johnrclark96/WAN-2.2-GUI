@@ -34,6 +34,8 @@ DEFAULT_OUTDIR = paths.OUTPUT_DIR.as_posix()
 
 ATTN_CHOICES = ["auto", "sdpa", "flash-attn", "flash-attn-ext"]
 ATTN_DEFAULT = "auto"
+OFFLOAD_CHOICES = ["none", "sequential"]
+OFFLOAD_DEFAULT = "none"
 
 
 def snap32(v: int) -> int:
@@ -87,7 +89,7 @@ def build_args(values: dict) -> List[str]:
     order = [
         "mode", "prompt", "neg_prompt", "sampler", "steps", "cfg", "seed",
         "fps", "frames", "width", "height", "batch_count", "batch_size",
-        "outdir", "model_dir", "dtype", "attn", "image",
+        "outdir", "model_dir", "dtype", "attn", "offload", "image",
     ]
 
     for key in order:
@@ -262,6 +264,7 @@ def build_ui():
                     batch_size = gr.Number(value=1, label="Batch Size")
                     dtype = gr.Dropdown(["fp16", "bf16", "fp32"], value="bf16", label="DType")
                     attn = gr.Dropdown(choices=ATTN_CHOICES, value=ATTN_DEFAULT, label="Attention")
+                    offload = gr.Dropdown(choices=OFFLOAD_CHOICES, value=OFFLOAD_DEFAULT, label="Offload")
 
                 with gr.Row():
                     model_dir = gr.Textbox(value=DEFAULT_MODEL_DIR, label="Model Dir")
@@ -309,6 +312,7 @@ def build_ui():
             model_dir_v,
             dtype_v,
             attn_v,
+            offload_v,
             image_v,
             mode_sel,
         ):
@@ -366,6 +370,7 @@ def build_ui():
                 "model_dir": model_dir_v,
                 "dtype": dtype_v,
                 "attn": attn_v,
+                "offload": offload_v,
                 "image": image_v,
             }
 
@@ -376,31 +381,32 @@ def build_ui():
                 yield line
 
         # Bind UI actions
-        run.click(
-            on_run,
-            inputs=[
-                engine,
-                prompt,
-                neg_prompt,
-                sampler,
-                steps,
-                cfg,
-                seed,
-                fps,
-                frames,
-                width,
-                height,
-                batch_count,
-                batch_size,
-                outdir,
-                model_dir,
-                dtype,
-                attn,
-                image,
-                mode,
-            ],
-            outputs=log,
-        )
+                run.click(
+                    on_run,
+                    inputs=[
+                        engine,
+                        prompt,
+                        neg_prompt,
+                        sampler,
+                        steps,
+                        cfg,
+                        seed,
+                        fps,
+                        frames,
+                        width,
+                        height,
+                        batch_count,
+                        batch_size,
+                        outdir,
+                        model_dir,
+                        dtype,
+                        attn,
+                        offload,
+                        image,
+                        mode,
+                    ],
+                    outputs=log,
+                )
 
         engine.change(
             lambda e: (

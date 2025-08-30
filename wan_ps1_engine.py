@@ -211,7 +211,7 @@ def validate(p: argparse.Namespace) -> None:
         raise ValueError("model_dir is required unless --dry-run")
 
 
-def load_pipeline(model_dir: str, dtype: str):  # pragma: no cover - heavy
+def load_pipeline(model_dir: str, dtype: str, offload: str):  # pragma: no cover - heavy
     """Optimized, quality-neutral loader for WAN pipeline."""
     global WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler, torch
     if WanPipeline is None:
@@ -257,12 +257,18 @@ def load_pipeline(model_dir: str, dtype: str):  # pragma: no cover - heavy
         except Exception:
             log("VAE slicing/tiling unavailable", stage="warn")
 
-    # Steadier than model_cpu_offload; do not also call pipe.to('cuda')
-    try:
-        pipe.enable_sequential_cpu_offload()
-        log("Sequential CPU offload enabled", stage="opt")
-    except Exception as e:
-        log(f"Sequential CPU offload unavailable: {e}", stage="warn")
+    if offload == "sequential":
+        try:
+            pipe.enable_sequential_cpu_offload()
+            log("Sequential CPU offload enabled", stage="opt")
+        except Exception as e:
+            log(f"Sequential CPU offload unavailable: {e}", stage="warn")
+    else:
+        try:
+            pipe.to("cuda")
+            log("Pipeline to GPU", stage="opt")
+        except Exception as e:
+            log(f"Pipeline to GPU failed: {e}", stage="warn")
 
     # Optional: compile VAE decoder for small overhead win (same math)
     import platform
@@ -529,6 +535,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--dtype", choices=["bf16", "fp16", "fp32"], default="bf16"
+    )
+    parser.add_argument(
+        "--offload",
+        choices=["none", "sequential"],
+        default="none",
+        help="Model offload strategy. 'none' keeps transformer on GPU; 'sequential' offloads blocks to CPU (safer on low VRAM, slower).",
     )
     parser.add_argument(
         "--attn",
