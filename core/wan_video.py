@@ -20,7 +20,12 @@ def generate_video_wan(args: Any, pipe: Any | None = None) -> Tuple[List[str], s
 
     engine.log_vram("before load")
     if pipe is None:
-        pipe = engine.load_pipeline(args.model_dir, args.dtype, args.offload)
+        pipe = engine.load_pipeline(
+            args.model_dir,
+            args.dtype,
+            args.offload,
+            getattr(args, "flashattention", False),
+        )
     engine.log_vram("after load")
     attn_name, attn_ctx = engine.attention_context(args.attn, pipe)
     print(f"[INFO] Attention backend: {attn_name}")

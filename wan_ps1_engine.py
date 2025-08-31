@@ -211,7 +211,7 @@ def validate(p: argparse.Namespace) -> None:
         raise ValueError("model_dir is required unless --dry-run")
 
 
-def load_pipeline(model_dir: str, dtype: str, offload: str):  # pragma: no cover - heavy
+def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool = False):  # pragma: no cover - heavy
     """Optimized, quality-neutral loader for WAN pipeline."""
     global WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler, torch
     if WanPipeline is None:
@@ -229,7 +229,19 @@ def load_pipeline(model_dir: str, dtype: str, offload: str):  # pragma: no cover
     t0 = _now()
     log(f"Loading model from: {model_dir}", stage="load")
     vae = AutoencoderKLWan.from_pretrained(model_dir, subfolder="vae", torch_dtype=torch_dtype)
-    pipe = WanPipeline.from_pretrained(model_dir, vae=vae, torch_dtype=torch_dtype)
+
+    attn_impl = None
+    if flashattention:
+        try:
+            import flash_attn  # type: ignore  # noqa: F401
+            attn_impl = "flash_attention_2"
+            log("FlashAttention2 enabled", stage="opt")
+        except Exception as e:
+            log(f"FlashAttention2 unavailable ({e}); continuing without it", stage="warn")
+    kwargs = {"vae": vae, "torch_dtype": torch_dtype}
+    if attn_impl:
+        kwargs["attn_implementation"] = attn_impl
+    pipe = WanPipeline.from_pretrained(model_dir, **kwargs)
     pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 
     # Prefer memory layouts that speed Conv3d (no fidelity change)
@@ -553,6 +565,11 @@ def main() -> int:
             "flash-attn-ext: Diffusers FlashAttention2Processor "
             "(requires flash_attn wheel; falls back to SDPA if unsupported)"
         ),
+    )
+    parser.add_argument(
+        "--flashattention",
+        action="store_true",
+        help="Enable Diffusers FlashAttention2 during pipeline init.",
     )
     parser.add_argument("--image", default="")
     parser.add_argument("--dry-run", action="store_true")

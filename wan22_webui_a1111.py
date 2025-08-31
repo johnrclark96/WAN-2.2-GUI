@@ -89,7 +89,8 @@ def build_args(values: dict) -> List[str]:
     order = [
         "mode", "prompt", "neg_prompt", "sampler", "steps", "cfg", "seed",
         "fps", "frames", "width", "height", "batch_count", "batch_size",
-        "outdir", "model_dir", "dtype", "attn", "offload", "image",
+        "outdir", "model_dir", "dtype", "attn", "offload", "flashattention",
+        "image",
     ]
 
     for key in order:
@@ -233,7 +234,9 @@ def build_ui():
 
         with gr.Tabs():
             with gr.Tab("Generate"):
-                engine = gr.Radio(["diffusers", "official"], value="diffusers", label="Engine")
+                with gr.Row():
+                    engine = gr.Radio(["diffusers", "official"], value="diffusers", label="Engine")
+                    flashattention = gr.Checkbox(label="Enable FlashAttention", value=False)
                 mode = gr.Radio(["T2V", "T2I"], value="T2V", label="Generation Mode")
 
                 with gr.Row():
@@ -312,6 +315,7 @@ def build_ui():
             model_dir_v,
             dtype_v,
             attn_v,
+            flash_v,
             offload_v,
             image_v,
             mode_sel,
@@ -370,6 +374,7 @@ def build_ui():
                 "model_dir": model_dir_v,
                 "dtype": dtype_v,
                 "attn": attn_v,
+                "flashattention": flash_v,
                 "offload": offload_v,
                 "image": image_v,
             }
@@ -401,6 +406,7 @@ def build_ui():
                         model_dir,
                         dtype,
                         attn,
+                        flashattention,
                         offload,
                         image,
                         mode,
@@ -412,9 +418,10 @@ def build_ui():
             lambda e: (
                 gr.Dropdown.update(interactive=(e == "diffusers")),
                 gr.Markdown.update(visible=(e == "official")),
+                gr.Checkbox.update(interactive=(e == "diffusers")),
             ),
             inputs=[engine],
-            outputs=[sampler, sampler_note],
+            outputs=[sampler, sampler_note, flashattention],
         )
 
         def _on_mode_change(m: str, cur_frames: int):
