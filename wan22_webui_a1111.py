@@ -374,8 +374,8 @@ def build_ui():
                 "model_dir": model_dir_v,
                 "dtype": dtype_v,
                 "attn": attn_v,
-                "flashattention": flash_v,
-                "offload": offload_v,
+                "flashattention": bool(flash_v),
+                "offload": offload_v or "none",
                 "image": image_v,
             }
 
