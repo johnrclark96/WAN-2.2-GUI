@@ -16,6 +16,7 @@ param(
     [string]$model_dir = "D:/wan22/models/Wan2.2-TI2V-5B-Diffusers",
     [string]$dtype = "bf16",
     [string]$attn = "sdpa",
+    [string]$offload = "none",
     [string]$image,
     [switch]$dry_run
 )
@@ -27,6 +28,7 @@ $python = "D:\wan22\venv\Scripts\python.exe"
 $engine = Join-Path $PSScriptRoot "wan_ps1_engine.py"
 
 # Caches / allocator hygiene
+$null = $null  # keep clean, rely on HF_HOME
 $env:HF_HOME = "D:\wan22\.cache\huggingface"
 $env:PYTHONIOENCODING = "utf-8"
 
@@ -79,6 +81,7 @@ if ($outdir)      { $argv += @("--outdir", $outdir) }
 if ($model_dir)   { $argv += @("--model_dir", $model_dir) }
 if ($dtype)       { $argv += @("--dtype", $dtype) }
 if ($attn)        { $argv += @("--attn", $attn) }
+if ($offload)     { $argv += @("--offload", $offload) }
 if ($image)       { $argv += @("--image", $image) }
 if ($dry_run)     { $argv += "--dry-run" }
 
