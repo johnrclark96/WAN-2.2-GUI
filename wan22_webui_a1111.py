@@ -385,34 +385,34 @@ def build_ui():
             for line in run_cmd(eng, **run_kw):
                 yield line
 
-        # Bind UI actions
-                run.click(
-                    on_run,
-                    inputs=[
-                        engine,
-                        prompt,
-                        neg_prompt,
-                        sampler,
-                        steps,
-                        cfg,
-                        seed,
-                        fps,
-                        frames,
-                        width,
-                        height,
-                        batch_count,
-                        batch_size,
-                        outdir,
-                        model_dir,
-                        dtype,
-                        attn,
-                        flashattention,
-                        offload,
-                        image,
-                        mode,
-                    ],
-                    outputs=log,
-                )
+        # Single binding: forward offload (and flashattention) to engine
+        run.click(
+            on_run,
+            inputs=[
+                engine,
+                prompt,
+                neg_prompt,
+                sampler,
+                steps,
+                cfg,
+                seed,
+                fps,
+                frames,
+                width,
+                height,
+                batch_count,
+                batch_size,
+                outdir,
+                model_dir,
+                dtype,
+                attn,
+                flashattention,
+                offload,
+                image,
+                mode,
+            ],
+            outputs=log,
+        )
 
         engine.change(
             lambda e: (

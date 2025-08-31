@@ -96,18 +96,27 @@ def attention_context(pref: str, pipe: Any | None = None):
     try:
         from torch.nn.attention import SDPBackend, sdpa_kernel  # type: ignore
     except Exception:  # pragma: no cover - torch absent
-        return "sdpa", nullcontext()
+        return "sdpa(math)", nullcontext()
 
-    name = "sdpa"
-    ctx = sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)
+    try:
+        ctx = sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)
+        name = "sdpa(mem-efficient)"
+        log("[attn] Using SDPA (mem-efficient)", stage="attn")
+    except Exception as e:
+        ctx = sdpa_kernel(SDPBackend.MATH)
+        name = "sdpa(math)"
+        log(f"[attn] SDPA mem-efficient unavailable ({e}); using math", stage="attn")
+
     if pref in ("auto", "flash-attn"):
         try:
             with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-                name = "flash-attn"
                 ctx = sdpa_kernel(SDPBackend.FLASH_ATTENTION)
+                name = "flash-attn"
+                log("[attn] Using FlashAttention via SDP", stage="attn")
         except Exception as e:
             if pref == "flash-attn":
-                log(f"FA3 requested but unavailable ({e}); using sdpa", stage="attn")
+                log(f"FA3 requested but unavailable ({e}); using {name}", stage="attn")
+
     if pref == "flash-attn-ext" and pipe is not None:
         try:
             from diffusers.models.attention_processor import FlashAttention2Processor
@@ -115,10 +124,11 @@ def attention_context(pref: str, pipe: Any | None = None):
                 pipe.transformer.set_attn_processor(FlashAttention2Processor())
                 name = "flash-attn-ext"
                 ctx = nullcontext()
+                log("[attn] Using flash-attn-ext", stage="attn")
             else:
-                log("Pipeline has no .transformer attribute; using sdpa", stage="attn")
+                log(f"Pipeline has no .transformer attribute; using {name}", stage="attn")
         except Exception as e:
-            log(f"flash-attn-ext requested but unavailable ({e}); using sdpa", stage="attn")
+            log(f"flash-attn-ext requested but unavailable ({e}); using {name}", stage="attn")
     return name, ctx
 
 
@@ -272,15 +282,16 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
     if offload == "sequential":
         try:
             pipe.enable_sequential_cpu_offload()
-            log("Sequential CPU offload enabled", stage="opt")
+            log("Sequential CPU offload ENABLED (slower, safer)", stage="opt")
         except Exception as e:
             log(f"Sequential CPU offload unavailable: {e}", stage="warn")
     else:
         try:
             pipe.to("cuda")
-            log("Pipeline to GPU", stage="opt")
         except Exception as e:
             log(f"Pipeline to GPU failed: {e}", stage="warn")
+        else:
+            log("Sequential CPU offload DISABLED (favoring GPU)", stage="opt")
 
     # Optional: compile VAE decoder for small overhead win (same math)
     import platform
@@ -380,7 +391,7 @@ def run_generation(
             # 3) Log on last step (don't ever break the pipeline)
             try:
                 if step is not None and int(step) == int(params.steps) - 1:
-                    log("Denoising finished. Starting VAE decode...", stage="decode")
+                    log("Last denoise step reached", stage="gen")
             except Exception:
                 pass
 
@@ -446,7 +457,26 @@ def run_generation(
             print(f"[INFO] Batch {bc}: {elapsed:.2f}s total, {elapsed / max(1, params.steps):.3f}s/step")
             log(f"Batch {bc} finished in {elapsed:.2f}s", stage="gen")
 
-        vids = getattr(result, "frames", getattr(result, "images", []))
+        latents = getattr(result, "latents", None)
+        if latents is not None:
+            log("Denoising finished. Starting VAE decode...", stage="decode")
+            try:
+                if latents.dim() == 5:
+                    B, C, T, H, W = latents.shape
+                    safe_T = max(1, (T // 32) * 32)
+                    if safe_T != T:
+                        log(f"[decode] Adjusting temporal length {T} -> {safe_T} for VAE merge", stage="decode")
+                        latents = latents[:, :, :safe_T, :, :].contiguous()
+            except Exception as e:
+                log(f"[decode] Temporal align check skipped ({e})", stage="warn")
+            try:
+                decoded = pipe.vae.decode(latents)
+                vids = getattr(decoded, "sample", decoded)
+            except Exception as e:
+                log(f"[decode] VAE decode failed ({e}); using pipeline output", stage="warn")
+                vids = getattr(result, "frames", getattr(result, "images", []))
+        else:
+            vids = getattr(result, "frames", getattr(result, "images", []))
         for bi, arr in enumerate(vids):
             if params.frames == 1:
                 img = Image.fromarray(arr[0])
