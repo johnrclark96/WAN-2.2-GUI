@@ -235,6 +235,7 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
         "fp16": torch.float16,
         "fp32": torch.float32,
     }[dtype]
+    device = "cuda"
 
     t0 = _now()
     log(f"Loading model from: {model_dir}", stage="load")
@@ -287,11 +288,50 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
             log(f"Sequential CPU offload unavailable: {e}", stage="warn")
     else:
         try:
-            pipe.to("cuda")
+            pipe.to(device)
         except Exception as e:
             log(f"Pipeline to GPU failed: {e}", stage="warn")
         else:
             log("Sequential CPU offload DISABLED (favoring GPU)", stage="opt")
+
+    # ---- Belt & suspenders: ensure key modules are on CUDA in the right dtype
+    target_dtype = torch_dtype
+
+    def _force_cuda(mod, name: str) -> None:
+        if mod is None:
+            return
+        try:
+            mod.to(device=device, dtype=target_dtype)
+            try:
+                p = next(mod.parameters())
+                log(f"[place] {name}: {p.device} {p.dtype}")
+            except StopIteration:
+                log(f"[place] {name}: no parameters")
+        except Exception as e:
+            log(f"[place] {name}: move failed ({e})")
+
+    _force_cuda(getattr(pipe, "transformer", None), "transformer")
+    _force_cuda(getattr(pipe, "text_encoder", None), "text_encoder")
+    _force_cuda(getattr(pipe, "vae", None), "vae")
+
+    # ---- Explicit hot-spot fix: patch_embedding must match input tensor device/dtype
+    try:
+        pe = getattr(getattr(pipe, "transformer", None), "patch_embedding", None)
+        if pe is not None:
+            try:
+                w = next(pe.parameters())
+                log(f"[place] patch_embedding.weight (before): {w.device} {w.dtype}")
+            except StopIteration:
+                w = None
+                log("[place] patch_embedding: no parameters")
+            pe.to(device=device, dtype=target_dtype)
+            try:
+                w2 = next(pe.parameters())
+                log(f"[place] patch_embedding.weight (after):  {w2.device} {w2.dtype}")
+            except StopIteration:
+                pass
+    except Exception as e:
+        log(f"[place] patch_embedding check failed ({e})")
 
     # Optional: compile VAE decoder for small overhead win (same math)
     import platform
