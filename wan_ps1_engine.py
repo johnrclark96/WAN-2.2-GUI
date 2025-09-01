@@ -314,24 +314,39 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
     _force_cuda(getattr(pipe, "text_encoder", None), "text_encoder")
     _force_cuda(getattr(pipe, "vae", None), "vae")
 
-    # ---- Explicit hot-spot fix: patch_embedding must match input tensor device/dtype
+    # ---- Runtime seatbelt: register pre-hooks to auto-align device/dtype on call
+    def _bind_autoplacer(mod, name: str) -> None:
+        if mod is None:
+            return
+
+        def _pre_hook(m, args):
+            x = args[0] if args else None
+            if x is None or not torch.is_tensor(x):
+                return
+            want_dev, want_dt = x.device, x.dtype
+            try:
+                p = next(m.parameters())
+            except StopIteration:
+                return
+            cur_dev, cur_dt = p.device, p.dtype
+            if cur_dev != want_dev or cur_dt != want_dt:
+                try:
+                    m.to(device=want_dev, dtype=want_dt)
+                    log(f"[place] auto-moved {name} -> {want_dev} {want_dt}")
+                except Exception as e:
+                    log(f"[place] auto-move {name} failed ({e})")
+
+        try:
+            mod.register_forward_pre_hook(_pre_hook)
+            log(f"[place] pre-hook bound: {name}")
+        except Exception as e:
+            log(f"[place] pre-hook bind failed for {name} ({e})")
+
+    _bind_autoplacer(getattr(pipe, "transformer", None), "transformer")
     try:
-        pe = getattr(getattr(pipe, "transformer", None), "patch_embedding", None)
-        if pe is not None:
-            try:
-                w = next(pe.parameters())
-                log(f"[place] patch_embedding.weight (before): {w.device} {w.dtype}")
-            except StopIteration:
-                w = None
-                log("[place] patch_embedding: no parameters")
-            pe.to(device=device, dtype=target_dtype)
-            try:
-                w2 = next(pe.parameters())
-                log(f"[place] patch_embedding.weight (after):  {w2.device} {w2.dtype}")
-            except StopIteration:
-                pass
+        _bind_autoplacer(getattr(getattr(pipe, "transformer", None), "patch_embedding", None), "transformer.patch_embedding")
     except Exception as e:
-        log(f"[place] patch_embedding check failed ({e})")
+        log(f"[place] could not bind patch_embedding pre-hook ({e})")
 
     # Optional: compile VAE decoder for small overhead win (same math)
     import platform
