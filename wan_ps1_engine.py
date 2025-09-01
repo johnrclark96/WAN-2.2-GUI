@@ -9,6 +9,10 @@ import time
 import traceback
 import os
 from contextlib import nullcontext
+try:  # pragma: no cover - torch optional for tests
+    import torch  # type: ignore
+except Exception:  # pragma: no cover - torch missing
+    torch = None  # type: ignore[assignment]
 from pathlib import Path
 from core.paths import OUTPUT_DIR, MODELS_DIR
 from typing import Any, Dict, List, IO
@@ -64,7 +68,6 @@ def log(msg: str, stage: str = "info", **extra) -> None:
         pass
 
 # ---------------- lazy/optional globals ----------------
-torch: Any = None
 Image: Any = None
 export_to_video: Any = None
 load_image: Any = None
@@ -223,12 +226,9 @@ def validate(p: argparse.Namespace) -> None:
 
 def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool = False):  # pragma: no cover - heavy
     """Optimized, quality-neutral loader for WAN pipeline."""
-    global WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler, torch
+    global WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler
     if WanPipeline is None:
         WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler, _, _ = _lazy_diffusers()
-    if torch is None:
-        import torch as _torch
-        torch = _torch
 
     torch_dtype = {
         "bf16": torch.bfloat16,
@@ -294,10 +294,10 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
         else:
             log("Sequential CPU offload DISABLED (favoring GPU)", stage="opt")
 
-    # ---- Belt & suspenders: ensure key modules are on CUDA in the right dtype
+    # ---- ensure all critical submodules are actually on CUDA in the right dtype (first pass)
     target_dtype = torch_dtype
 
-    def _force_cuda(mod, name: str) -> None:
+    def force_cuda(mod, name: str) -> None:
         if mod is None:
             return
         try:
@@ -310,28 +310,81 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
         except Exception as e:
             log(f"[place] {name}: move failed ({e})")
 
-    _force_cuda(getattr(pipe, "transformer", None), "transformer")
-    _force_cuda(getattr(pipe, "text_encoder", None), "text_encoder")
-    _force_cuda(getattr(pipe, "vae", None), "vae")
+    force_cuda(getattr(pipe, "transformer", None), "transformer")
+    force_cuda(getattr(pipe, "text_encoder", None), "text_encoder")
+    force_cuda(getattr(pipe, "vae", None), "vae")
 
-    # ---- Explicit hot-spot fix: patch_embedding must match input tensor device/dtype
-    try:
-        pe = getattr(getattr(pipe, "transformer", None), "patch_embedding", None)
-        if pe is not None:
+    # ---- Runtime seatbelt: register a kwargs-aware pre-hook to auto-align device/dtype per call
+    def bind_autoplacer(mod, name: str) -> None:
+        if mod is None:
+            return
+
+        def _pre_hook(m, args, kwargs):
+            # find first tensor from args OR kwargs
+            x = None
+            if args:
+                for a in args:
+                    if torch.is_tensor(a):
+                        x = a
+                        break
+            if x is None and kwargs:
+                for v in kwargs.values():
+                    if torch.is_tensor(v):
+                        x = v
+                        break
+            if x is None:
+                return  # nothing to infer from
+            want_dev, want_dt = x.device, x.dtype
+            # move the module if needed
             try:
-                w = next(pe.parameters())
-                log(f"[place] patch_embedding.weight (before): {w.device} {w.dtype}")
+                p = next(m.parameters())
+                cur_dev, cur_dt = p.device, p.dtype
             except StopIteration:
-                w = None
-                log("[place] patch_embedding: no parameters")
-            pe.to(device=device, dtype=target_dtype)
+                return
+            if cur_dev != want_dev or cur_dt != want_dt:
+                try:
+                    m.to(device=want_dev, dtype=want_dt)
+                    log(f"[place] auto-moved {name} -> {want_dev} {want_dt}")
+                except Exception as e:
+                    log(f"[place] auto-move {name} failed ({e})")
+            # also ensure critical child stays aligned (patch_embedding → Conv3d weights)
             try:
-                w2 = next(pe.parameters())
-                log(f"[place] patch_embedding.weight (after):  {w2.device} {w2.dtype}")
-            except StopIteration:
-                pass
-    except Exception as e:
-        log(f"[place] patch_embedding check failed ({e})")
+                pe = getattr(m, "patch_embedding", None)
+                if pe is not None:
+                    pw = next(pe.parameters(), None)
+                    if pw is None or pw.device != want_dev or pw.dtype != want_dt:
+                        pe.to(device=want_dev, dtype=want_dt)
+                        log(f"[place] auto-moved {name}.patch_embedding -> {want_dev} {want_dt}")
+            except Exception as e:
+                log(f"[place] auto-move {name}.patch_embedding failed ({e})")
+
+        try:
+            mod.register_forward_pre_hook(_pre_hook, with_kwargs=True)
+            log(f"[place] pre-hook bound: {name}")
+        except Exception as e:
+            log(f"[place] pre-hook bind failed for {name} ({e})")
+
+    # Bind hooks on all plausible transformer modules (current_model may swap)
+    seen = set()
+
+    def _uniq(m: Any) -> bool:
+        if m is None:
+            return False
+        i = id(m)
+        if i in seen:
+            return False
+        seen.add(i)
+        return True
+
+    tp = getattr(pipe, "transformer", None)
+    if _uniq(tp):
+        bind_autoplacer(tp, "transformer")
+    for idx, tm in enumerate(getattr(pipe, "transformers", []) or []):
+        if _uniq(tm):
+            bind_autoplacer(tm, f"transformers[{idx}]")
+    for nm, sub in vars(pipe).items():
+        if isinstance(nm, str) and nm.startswith("transformer") and _uniq(sub):
+            bind_autoplacer(sub, nm)
 
     # Optional: compile VAE decoder for small overhead win (same math)
     import platform
