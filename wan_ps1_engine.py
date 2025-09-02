@@ -320,7 +320,7 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
             return
 
         def _pre_hook(m, args, kwargs):
-            # find first tensor from args OR kwargs
+            # 1) find first tensor from args OR kwargs
             x = None
             if args:
                 for a in args:
@@ -335,7 +335,8 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
             if x is None:
                 return  # nothing to infer from
             want_dev, want_dt = x.device, x.dtype
-            # move the module if needed
+
+            # 2) move the module if needed
             try:
                 p = next(m.parameters())
                 cur_dev, cur_dt = p.device, p.dtype
@@ -347,7 +348,8 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
                     log(f"[place] auto-moved {name} -> {want_dev} {want_dt}")
                 except Exception as e:
                     log(f"[place] auto-move {name} failed ({e})")
-            # also ensure critical child stays aligned (patch_embedding → Conv3d weights)
+
+            # 3) also ensure Conv3d in patch_embedding aligns (this is the crash hotspot)
             try:
                 pe = getattr(m, "patch_embedding", None)
                 if pe is not None:
@@ -358,11 +360,12 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
             except Exception as e:
                 log(f"[place] auto-move {name}.patch_embedding failed ({e})")
 
+        # Register with kwargs support; fall back for older torch
         try:
             mod.register_forward_pre_hook(_pre_hook, with_kwargs=True)
-            log(f"[place] pre-hook bound: {name}")
-        except Exception as e:
-            log(f"[place] pre-hook bind failed for {name} ({e})")
+        except TypeError:
+            mod.register_forward_pre_hook(_pre_hook)
+        log(f"[place] pre-hook bound: {name}")
 
     # Bind hooks on all plausible transformer modules (current_model may swap)
     seen = set()
@@ -385,6 +388,17 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
     for nm, sub in vars(pipe).items():
         if isinstance(nm, str) and nm.startswith("transformer") and _uniq(sub):
             bind_autoplacer(sub, nm)
+
+    # 🔒 Final belt & suspenders: bind on ANY submodule that exposes `patch_embedding`
+    bound_extra = 0
+    try:
+        for full_name, submod in getattr(pipe, "named_modules", lambda: [])():
+            if _uniq(submod) and hasattr(submod, "patch_embedding"):
+                bind_autoplacer(submod, f"module:{full_name}")
+                bound_extra += 1
+        log(f"[place] extra pre-hooks bound on modules with patch_embedding: {bound_extra}", stage="opt")
+    except Exception as e:
+        log(f"[place] failed sweeping named_modules for patch_embedding ({e})", stage="warn")
 
     # Optional: compile VAE decoder for small overhead win (same math)
     import platform
