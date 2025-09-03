@@ -9,6 +9,10 @@ import time
 import traceback
 import os
 from contextlib import nullcontext
+try:  # pragma: no cover - torch optional for tests
+    import torch  # type: ignore
+except Exception:  # pragma: no cover - torch missing
+    torch = None  # type: ignore[assignment]
 from pathlib import Path
 from core.paths import OUTPUT_DIR, MODELS_DIR
 from typing import Any, Dict, List, IO
@@ -64,7 +68,6 @@ def log(msg: str, stage: str = "info", **extra) -> None:
         pass
 
 # ---------------- lazy/optional globals ----------------
-torch: Any = None
 Image: Any = None
 export_to_video: Any = None
 load_image: Any = None
@@ -223,12 +226,9 @@ def validate(p: argparse.Namespace) -> None:
 
 def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool = False):  # pragma: no cover - heavy
     """Optimized, quality-neutral loader for WAN pipeline."""
-    global WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler, torch
+    global WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler
     if WanPipeline is None:
         WanPipeline, AutoencoderKLWan, UniPCMultistepScheduler, _, _ = _lazy_diffusers()
-    if torch is None:
-        import torch as _torch
-        torch = _torch
 
     torch_dtype = {
         "bf16": torch.bfloat16,
@@ -294,10 +294,10 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
         else:
             log("Sequential CPU offload DISABLED (favoring GPU)", stage="opt")
 
-    # ---- Belt & suspenders: ensure key modules are on CUDA in the right dtype
+    # ---- ensure all critical submodules are actually on CUDA in the right dtype (first pass)
     target_dtype = torch_dtype
 
-    def _force_cuda(mod, name: str) -> None:
+    def force_cuda(mod, name: str) -> None:
         if mod is None:
             return
         try:
@@ -310,25 +310,38 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
         except Exception as e:
             log(f"[place] {name}: move failed ({e})")
 
-    _force_cuda(getattr(pipe, "transformer", None), "transformer")
-    _force_cuda(getattr(pipe, "text_encoder", None), "text_encoder")
-    _force_cuda(getattr(pipe, "vae", None), "vae")
+    force_cuda(getattr(pipe, "transformer", None), "transformer")
+    force_cuda(getattr(pipe, "text_encoder", None), "text_encoder")
+    force_cuda(getattr(pipe, "vae", None), "vae")
 
-    # ---- Runtime seatbelt: register pre-hooks to auto-align device/dtype on call
-    def _bind_autoplacer(mod, name: str) -> None:
+    # ---- Runtime seatbelt: register a kwargs-aware pre-hook to auto-align device/dtype per call
+    def bind_autoplacer(mod, name: str) -> None:
         if mod is None:
             return
 
-        def _pre_hook(m, args):
-            x = args[0] if args else None
-            if x is None or not torch.is_tensor(x):
-                return
+        def _pre_hook(m, args, kwargs):
+            # 1) find first tensor from args OR kwargs
+            x = None
+            if args:
+                for a in args:
+                    if torch.is_tensor(a):
+                        x = a
+                        break
+            if x is None and kwargs:
+                for v in kwargs.values():
+                    if torch.is_tensor(v):
+                        x = v
+                        break
+            if x is None:
+                return  # nothing to infer from
             want_dev, want_dt = x.device, x.dtype
+
+            # 2) move the module if needed
             try:
                 p = next(m.parameters())
+                cur_dev, cur_dt = p.device, p.dtype
             except StopIteration:
                 return
-            cur_dev, cur_dt = p.device, p.dtype
             if cur_dev != want_dev or cur_dt != want_dt:
                 try:
                     m.to(device=want_dev, dtype=want_dt)
@@ -336,17 +349,57 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
                 except Exception as e:
                     log(f"[place] auto-move {name} failed ({e})")
 
-        try:
-            mod.register_forward_pre_hook(_pre_hook)
-            log(f"[place] pre-hook bound: {name}")
-        except Exception as e:
-            log(f"[place] pre-hook bind failed for {name} ({e})")
+            # 3) also ensure Conv3d in patch_embedding aligns (this is the crash hotspot)
+            try:
+                pe = getattr(m, "patch_embedding", None)
+                if pe is not None:
+                    pw = next(pe.parameters(), None)
+                    if pw is None or pw.device != want_dev or pw.dtype != want_dt:
+                        pe.to(device=want_dev, dtype=want_dt)
+                        log(f"[place] auto-moved {name}.patch_embedding -> {want_dev} {want_dt}")
+            except Exception as e:
+                log(f"[place] auto-move {name}.patch_embedding failed ({e})")
 
-    _bind_autoplacer(getattr(pipe, "transformer", None), "transformer")
+        # Register with kwargs support; fall back for older torch
+        try:
+            mod.register_forward_pre_hook(_pre_hook, with_kwargs=True)
+        except TypeError:
+            mod.register_forward_pre_hook(_pre_hook)
+        log(f"[place] pre-hook bound: {name}")
+
+    # Bind hooks on all plausible transformer modules (current_model may swap)
+    seen = set()
+
+    def _uniq(m: Any) -> bool:
+        if m is None:
+            return False
+        i = id(m)
+        if i in seen:
+            return False
+        seen.add(i)
+        return True
+
+    tp = getattr(pipe, "transformer", None)
+    if _uniq(tp):
+        bind_autoplacer(tp, "transformer")
+    for idx, tm in enumerate(getattr(pipe, "transformers", []) or []):
+        if _uniq(tm):
+            bind_autoplacer(tm, f"transformers[{idx}]")
+    for nm, sub in vars(pipe).items():
+        if isinstance(nm, str) and nm.startswith("transformer") and _uniq(sub):
+            bind_autoplacer(sub, nm)
+
+    # 🔒 Final belt & suspenders: bind on ANY submodule that exposes `patch_embedding`
+    bound_extra = 0
     try:
-        _bind_autoplacer(getattr(getattr(pipe, "transformer", None), "patch_embedding", None), "transformer.patch_embedding")
+        for full_name, submod in getattr(pipe, "named_modules", lambda: [])():
+            if _uniq(submod) and hasattr(submod, "patch_embedding"):
+                bind_autoplacer(submod, f"module:{full_name}")
+                bound_extra += 1
+        log(f"[place] extra pre-hooks bound on modules with patch_embedding: {bound_extra}", stage="opt")
     except Exception as e:
-        log(f"[place] could not bind patch_embedding pre-hook ({e})")
+        log(f"[place] failed sweeping named_modules for patch_embedding ({e})", stage="warn")
+
 
     # Optional: compile VAE decoder for small overhead win (same math)
     import platform
@@ -486,18 +539,6 @@ def run_generation(
 
     for bc in range(params.batch_count):
         with attn_ctx:
-            # Free space before decode inside __call__
-            try:
-                if hasattr(pipe, "transformer"):
-                    pipe.transformer.to("cpu")
-                    log("Transformer → CPU before decode", stage="opt")
-            except Exception:
-                pass
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
-
             start = time.time()
             log(f"Batch {bc} starting…", stage="gen")
             im = getattr(torch, "inference_mode", None)
@@ -515,6 +556,17 @@ def run_generation(
         latents = getattr(result, "latents", None)
         if latents is not None:
             log("Denoising finished. Starting VAE decode...", stage="decode")
+            # Now free VRAM for decode: move transformer to CPU *after* denoise
+            try:
+                if hasattr(pipe, "transformer"):
+                    pipe.transformer.to("cpu")
+                    log("Transformer → CPU before VAE decode", stage="opt")
+            except Exception:
+                pass
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
             try:
                 if latents.dim() == 5:
                     B, C, T, H, W = latents.shape
