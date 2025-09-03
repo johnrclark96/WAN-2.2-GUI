@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Tuple
+from typing import Any
 
 import wan_ps1_engine as engine
 
 
-def generate_video_wan(args: Any, pipe: Any | None = None) -> Tuple[List[str], str]:
+def generate_video_wan(args: Any, pipe: Any | None = None) -> tuple[list[str], str]:
     """Generate video (or single PNG) using the 5B pipeline.
 
     Parameters
