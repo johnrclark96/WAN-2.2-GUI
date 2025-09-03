@@ -13,6 +13,17 @@ try:  # pragma: no cover - torch optional for tests
     import torch  # type: ignore
 except Exception:  # pragma: no cover - torch missing
     torch = None  # type: ignore[assignment]
+
+# --- tolerant import for Diffusers FlashAttention processor (API name varies) ---
+try:
+    # Older API (diffusers <= 0.35)
+    from diffusers.models.attention_processor import FlashAttention2Processor as _FA2
+except Exception:  # pragma: no cover - diffusers optional for tests
+    try:
+        # Newer/alt API (some 0.36 dev snapshots)
+        from diffusers.models.attention_processor import FlashAttnProcessor2_0 as _FA2
+    except Exception:  # pragma: no cover - diffusers optional for tests
+        _FA2 = None
 from pathlib import Path
 from core.paths import OUTPUT_DIR, MODELS_DIR
 from typing import Any, Dict, List, IO
@@ -94,6 +105,38 @@ def log_vram(label: str) -> None:
     print(f"[INFO] {label} VRAM: {used:.0f} MiB used / {total/1024**2:.0f} MiB total")
 
 
+def _enable_flash_attn_ext(pipe: Any, _torch_dtype: Any | None) -> tuple[bool, str | None]:
+    """Best-effort enable Tri Dao FlashAttention via Diffusers processor.
+
+    Returns ``(ok, error)`` where ``ok`` indicates whether any module had the
+    processor applied. ``error`` is ``None`` on success.
+    """
+    if _FA2 is None:
+        return False, "no FlashAttention processor class in this diffusers build"
+    try:
+        proc = _FA2()
+        did_any = False
+        if (
+            hasattr(pipe, "unet")
+            and pipe.unet is not None
+            and hasattr(pipe.unet, "set_attn_processor")
+        ):
+            pipe.unet.set_attn_processor(proc)
+            did_any = True
+        if (
+            hasattr(pipe, "transformer")
+            and pipe.transformer is not None
+            and hasattr(pipe.transformer, "set_attn_processor")
+        ):
+            pipe.transformer.set_attn_processor(proc)
+            did_any = True
+        if did_any:
+            return True, None
+        return False, "no modules support set_attn_processor"
+    except Exception as e:  # pragma: no cover - diffusers optional in tests
+        return False, str(e)
+
+
 def attention_context(pref: str, pipe: Any | None = None):
     """Return (name, context manager) for the requested attention backend."""
     try:
@@ -104,34 +147,41 @@ def attention_context(pref: str, pipe: Any | None = None):
     try:
         ctx = sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)
         name = "sdpa(mem-efficient)"
-        log("[attn] Using SDPA (mem-efficient)", stage="attn")
+        log("Using SDPA (mem-efficient)", stage="attn")
     except Exception as e:
         ctx = sdpa_kernel(SDPBackend.MATH)
         name = "sdpa(math)"
-        log(f"[attn] SDPA mem-efficient unavailable ({e}); using math", stage="attn")
+        log(f"SDPA mem-efficient unavailable ({e}); using math", stage="attn")
 
     if pref in ("auto", "flash-attn"):
         try:
             with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
                 ctx = sdpa_kernel(SDPBackend.FLASH_ATTENTION)
                 name = "flash-attn"
-                log("[attn] Using FlashAttention via SDP", stage="attn")
+                log("Using FlashAttention via SDP", stage="attn")
         except Exception as e:
             if pref == "flash-attn":
                 log(f"FA3 requested but unavailable ({e}); using {name}", stage="attn")
 
-    if pref == "flash-attn-ext" and pipe is not None:
-        try:
-            from diffusers.models.attention_processor import FlashAttention2Processor
-            if hasattr(pipe, "transformer"):
-                pipe.transformer.set_attn_processor(FlashAttention2Processor())
-                name = "flash-attn-ext"
-                ctx = nullcontext()
-                log("[attn] Using flash-attn-ext", stage="attn")
-            else:
-                log(f"Pipeline has no .transformer attribute; using {name}", stage="attn")
-        except Exception as e:
-            log(f"flash-attn-ext requested but unavailable ({e}); using {name}", stage="attn")
+    if pref in {"flash-attn-ext", "flash_attn_ext"} and pipe is not None:
+        torch_dtype = None
+        if hasattr(pipe, "unet") and getattr(pipe.unet, "dtype", None) is not None:
+            torch_dtype = pipe.unet.dtype
+        elif hasattr(pipe, "transformer") and getattr(pipe.transformer, "dtype", None) is not None:
+            torch_dtype = pipe.transformer.dtype
+        ok, err = _enable_flash_attn_ext(pipe, torch_dtype)
+        if ok:
+            name = "flash-attn-ext"
+            ctx = nullcontext()
+            log("FlashAttention EXT enabled via diffusers attention processor", stage="attn")
+        else:
+            log(f"flash-attn-ext unavailable: {err}; using sdpa(mem-efficient)", stage="attn")
+            try:
+                ctx = sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)
+                name = "sdpa(mem-efficient)"
+            except Exception:
+                ctx = sdpa_kernel(SDPBackend.MATH)
+                name = "sdpa(math)"
     return name, ctx
 
 
