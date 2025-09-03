@@ -400,6 +400,7 @@ def load_pipeline(model_dir: str, dtype: str, offload: str, flashattention: bool
     except Exception as e:
         log(f"[place] failed sweeping named_modules for patch_embedding ({e})", stage="warn")
 
+
     # Optional: compile VAE decoder for small overhead win (same math)
     import platform
     has_triton = True
