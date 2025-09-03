@@ -18,6 +18,7 @@ param(
     [string]$attn = "sdpa",
     [string]$offload = "none",
     [string]$image,
+    [switch]$flashattention,
     [switch]$dry_run
 )
 
@@ -83,6 +84,7 @@ if ($dtype)       { $argv += @("--dtype", $dtype) }
 if ($attn)        { $argv += @("--attn", $attn) }
 if ($offload)     { $argv += @("--offload", $offload) }
 if ($image)       { $argv += @("--image", $image) }
+if ($flashattention) { $argv += "--flashattention" }
 if ($dry_run)     { $argv += "--dry-run" }
 
 # Print a simple launch line without $() subexpressions (avoids parse edge cases)
