@@ -105,6 +105,95 @@ def log_vram(label: str) -> None:
     print(f"[INFO] {label} VRAM: {used:.0f} MiB used / {total/1024**2:.0f} MiB total")
 
 
+# ---------- Temporal alignment helpers (video VAE) ----------
+def _get_temporal_stride(pipe) -> int:
+    """Best-effort detection of the VAE's temporal downsample/stride."""
+    # Allow manual override for power users
+    try:
+        env_override = os.environ.get("WAN_VAE_T_STRIDE")
+        if env_override:
+            return max(1, int(env_override))
+    except Exception:
+        pass
+    # Ask the model if it advertises a temporal downsample value
+    down = None
+    try:
+        down = getattr(getattr(pipe, "vae", None), "temporal_downsample", None)
+    except Exception:
+        down = None
+    if down is None:
+        try:
+            down = getattr(getattr(getattr(pipe, "vae", None), "config", object), "temporal_downsample", None)
+        except Exception:
+            down = None
+    try:
+        down = int(down) if down is not None else 4
+    except Exception:
+        down = 4
+    return max(1, down)
+
+
+def _infer_t_axis(latents, desired_frames: int | None) -> int:
+    """
+    Heuristically infer which axis is time for 5D latents.
+    Prefers the axis whose size equals desired_frames; otherwise uses channel=4 heuristic.
+    Fallback: assume (B, C, T, H, W) -> axis 2.
+    """
+    if latents.ndim != 5:
+        return -1
+    # 1) If we were told the requested frames, prefer that match.
+    if isinstance(desired_frames, int) and desired_frames > 0:
+        for ax in (1, 2, 3, 4):
+            if latents.shape[ax] == desired_frames:
+                return ax
+    # 2) SD-style latent channels are typically 4. Use that to separate C vs T.
+    if latents.shape[1] == 4 and latents.shape[2] != 4:
+        return 2  # (B, C, T, H, W)
+    if latents.shape[2] == 4 and latents.shape[1] != 4:
+        return 1  # (B, T, C, H, W)
+    # 3) Fallback: assume (B, C, T, H, W)
+    return 2
+
+
+def _crop_temporal_for_decode(latents, pipe, desired_frames: int | None, log_fn):
+    """
+    If necessary, crop temporal length T down to a multiple of the VAE stride to avoid shape mismatches.
+    Returns the (possibly) cropped latents.
+    """
+    try:
+        if getattr(latents, "ndim", 0) != 5:
+            return latents
+        t_axis = _infer_t_axis(latents, desired_frames)
+        if t_axis < 0:
+            return latents
+        T = latents.shape[t_axis]
+        down = _get_temporal_stride(pipe)
+        if down <= 1:
+            return latents
+        safe_T = (T // down) * down
+        if safe_T < T:
+            if callable(log_fn):
+                log_fn(
+                    f"[decode] Cropping temporal length {T} -> {safe_T} to match VAE stride={down}",
+                    stage="decode",
+                )
+            slc = [slice(None)] * latents.ndim
+            slc[t_axis] = slice(0, safe_T)
+            latents = latents[tuple(slc)].contiguous()
+        else:
+            if callable(log_fn):
+                log_fn(
+                    f"[decode] Temporal length {T} already aligned (stride={down})",
+                    stage="decode",
+                )
+        return latents
+    except Exception as e:
+        # Be conservative: if anything goes wrong, keep latents as-is and let upstream error surface.
+        if callable(log_fn):
+            log_fn(f"[decode] Temporal crop skipped due to error: {e}", stage="warn")
+        return latents
+
+
 def _enable_flash_attn_ext(pipe: Any, _torch_dtype: Any | None) -> tuple[bool, str | None]:
     """Best-effort enable Tri Dao FlashAttention via Diffusers processor.
 
@@ -496,7 +585,7 @@ def run_generation(
         "guidance_scale": params.cfg,
         "num_videos_per_prompt": params.batch_size,
         "generator": generator,
-        "output_type": "np",
+        "output_type": "np" if getattr(params, "offload", "none") != "staged" else "latent",
     }
     if params.image:
         _Resampling = getattr(Image, "Resampling", Image)
@@ -606,26 +695,33 @@ def run_generation(
         latents = getattr(result, "latents", None)
         if latents is not None:
             log("Denoising finished. Starting VAE decode...", stage="decode")
-            # Now free VRAM for decode: move transformer to CPU *after* denoise
-            try:
-                if hasattr(pipe, "transformer"):
-                    pipe.transformer.to("cpu")
-                    log("Transformer → CPU before VAE decode", stage="opt")
-            except Exception:
-                pass
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
-            try:
-                if latents.dim() == 5:
-                    B, C, T, H, W = latents.shape
-                    safe_T = max(1, (T // 32) * 32)
-                    if safe_T != T:
-                        log(f"[decode] Adjusting temporal length {T} -> {safe_T} for VAE merge", stage="decode")
-                        latents = latents[:, :, :safe_T, :, :].contiguous()
-            except Exception as e:
-                log(f"[decode] Temporal align check skipped ({e})", stage="warn")
+            # (legacy /32 crop removed; stride-aware crop happens below)
+            # If staged offload was requested, swap modules before decode
+            if getattr(params, "offload", "none") == "staged":
+                try:
+                    if hasattr(pipe, "unet") and pipe.unet is not None:
+                        pipe.unet.to("cpu")
+                        log("UNet → CPU before VAE decode (staged)", stage="opt")
+                except Exception:
+                    pass
+                try:
+                    _dtype_map = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
+                    _dtype = _dtype_map.get(getattr(params, "dtype", "fp16"), torch.float16)
+                    pipe.vae.to("cuda", dtype=_dtype)
+                    if hasattr(pipe.vae, "enable_tiling"):
+                        pipe.vae.enable_tiling()
+                    if hasattr(pipe.vae, "enable_slicing"):
+                        pipe.vae.enable_slicing()
+                    log("VAE → CUDA for decode (staged)", stage="opt")
+                except Exception as e:
+                    log(f"VAE CUDA placement failed: {e}", stage="warn")
+                try:
+                    if torch and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+            # --- NEW: crop T to a safe multiple of VAE temporal stride ---
+            latents = _crop_temporal_for_decode(latents, pipe, getattr(params, "frames", None), log)
             try:
                 decoded = pipe.vae.decode(latents)
                 vids = getattr(decoded, "sample", decoded)
@@ -737,9 +833,13 @@ def main() -> int:
     )
     parser.add_argument(
         "--offload",
-        choices=["none", "sequential"],
+        choices=["none", "sequential", "staged"],
         default="none",
-        help="Model offload strategy. 'none' keeps transformer on GPU; 'sequential' offloads blocks to CPU (safer on low VRAM, slower).",
+        help=(
+            "Model offload strategy. 'none' keeps transformer on GPU; "
+            "'sequential' offloads blocks to CPU (safer on low VRAM, slower); "
+            "'staged' keeps UNet on GPU during denoise then swaps modules for VAE decode."
+        ),
     )
     parser.add_argument(
         "--attn",
